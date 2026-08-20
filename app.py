@@ -1,4 +1,8 @@
 import streamlit as st
+st.components.v1.html("""
+<script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-3410419794913660"
+     crossorigin="anonymous"></script>
+""", height=0, width=0)
 import yfinance as yf
 import requests
 import pandas as pd
