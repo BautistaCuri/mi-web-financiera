@@ -248,7 +248,17 @@ st.markdown("""
 # ============================================================
 # 3. RUTEO DE LA APLICACIÓN
 # ============================================================
-nav = st.query_params.get("nav", "inicio")
+nav = st.query_params.get("nav", "inicio")# ============================================================
+# BOTÓN DE PAGO PREMIUM (STRIPE)
+# ============================================================
+st.markdown("---")
+st.subheader("🔓 Acceso Completo y Herramientas Premium")
+st.write("Obtén acceso ilimitado a todos nuestros modelos de amortización y monitores avanzados.")
+
+# AQUÍ PEGAS TU ENLACE DE STRIPE ENTRE LAS COMILLAS
+st.link_button("👉 Suscribirse a Premium Aquí", "https://buy.stripe.com/test_dRmfZ98gH27Q3toh002kw00")
+st.markdown("---")
+
 
 # ============================================================
 # 4. EXTRACCIÓN DE DATOS Y NOTICIAS
