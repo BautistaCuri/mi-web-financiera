@@ -6,13 +6,15 @@ st.components.v1.html("""
 import yfinance as yf
 import requests
 import pandas as pd
-from datetime import datetime, timedelta
+from datetime import datetime
 import pytz
 import plotly.graph_objects as go
 import xml.etree.ElementTree as ET
 import re
 import json
 import os
+import uuid
+import hashlib
 
 # ============================================================
 # 1. CONFIGURACIÓN DE LA PÁGINA Y BASE DE DATOS LOCAL
@@ -31,6 +33,25 @@ HEADERS = {
 
 DB_FILE = "usuarios_carteras.json"
 
+def default_user_data():
+    return {
+        "password": "",
+        "session_token": "", # NUEVO: Para que no te desloguee al cambiar de pantalla
+        "efectivo_ars": 0.0,
+        "efectivo_usd": 0.0,
+        "inversiones": [], 
+        "watchlist": [], 
+        "activos_manuales": {}, 
+        "movimientos": [] 
+    }
+
+def hash_password(password):
+    return hashlib.sha256(password.encode()).hexdigest()
+
+def es_correo_valido(correo):
+    patron = r'^[\w\.-]+@[\w\.-]+\.\w+$'
+    return re.match(patron, correo) is not None
+
 def cargar_db():
     if not os.path.exists(DB_FILE):
         return {}
@@ -44,114 +65,158 @@ def guardar_db(db):
     with open(DB_FILE, "w") as f:
         json.dump(db, f, indent=4)
 
-def sincronizar_cartera():
+def sincronizar_datos():
     if "user_email" in st.session_state and st.session_state.user_email:
         db = cargar_db()
-        db[st.session_state.user_email] = st.session_state.portfolio
+        db[st.session_state.user_email] = st.session_state.user_data
         guardar_db(db)
 
-if 'portfolio' not in st.session_state:
-    st.session_state.portfolio = {}
+# Cargar la base de datos para verificar el token
+db_general = cargar_db()
+token_url = st.query_params.get("t", None)
+
+# SISTEMA ANTI-DESLOGUEO: Si hay un token en la URL, auto-iniciamos sesión
+if token_url and "user_email" not in st.session_state:
+    for email, data in db_general.items():
+        if data.get("session_token") == token_url:
+            st.session_state.user_email = email
+            st.session_state.user_data = data
+            break
+
+if 'user_data' not in st.session_state:
+    st.session_state.user_data = default_user_data()
+
 
 # ============================================================
 # 2. INYECCIÓN DE CSS Y HTML (NAVBAR Y FOOTER FIJOS)
 # ============================================================
 
-st.markdown("""
+# Preparamos el token para inyectarlo en los links del menú
+token_actual = st.query_params.get("t", "")
+base_qs = f"&t={token_actual}" if token_actual else ""
+
+if st.session_state.get("user_email"):
+    nav_login_text = f"👤 Mi Cuenta"
+    nav_login_link = f"?nav=login{base_qs}"
+else:
+    nav_login_text = "🔑 Iniciar Sesión"
+    nav_login_link = f"?nav=login{base_qs}"
+
+st.markdown(f"""
 <style>
-    [data-testid="collapsedControl"] { display: none; }
-    header { display: none !important; }
+    [data-testid="collapsedControl"] {{ display: none; }}
+    header {{ display: none !important; }}
     
-    .block-container {
+    .block-container {{
         padding-top: 90px !important;
         padding-bottom: 70px !important;
-    }
+    }}
 
-    /* Navbar Profesional Estilo Terminal */
-    .navbar {
+    /* Barra Superior con altura fija */
+    .navbar {{
         position: fixed;
         top: 0;
         left: 0;
         width: 100%;
+        height: 60px; 
         background-color: #0d1117;
         font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
         display: flex;
         align-items: center;
         padding: 0 24px;
         border-bottom: 1px solid #30363d;
-        z-index: 9999;
+        z-index: 99999;
         box-shadow: 0 4px 12px rgba(0,0,0,0.3);
-    }
+    }}
 
-    .navbar a.brand {
+    .navbar a.brand {{
         font-size: 20px;
         font-weight: 700;
         color: #00e676;
         text-decoration: none;
-        padding: 12px 16px;
+        padding: 0;
         margin-right: 20px;
         letter-spacing: 0.5px;
-    }
+    }}
 
-    .dropdown {
+    .dropdown {{
         float: left;
-        overflow: hidden;
-        height: 100%;
-    }
+        position: relative; 
+        height: 100%; 
+        display: flex;
+        align-items: center; 
+    }}
 
-    .dropdown .dropbtn {
+    .dropdown .dropbtn {{
         font-size: 15px;
         border: none;
         outline: none;
         color: #c9d1d9;
-        padding: 16px 18px;
+        padding: 0 18px;
         background-color: inherit;
         font-family: inherit;
         margin: 0;
         cursor: pointer;
+        height: 100%; 
         transition: color 0.2s;
-    }
+    }}
 
-    .navbar a:hover, .dropdown:hover .dropbtn {
+    .navbar a:hover, .dropdown:hover .dropbtn {{
         color: #00e676;
         background-color: #161b22;
-    }
+    }}
 
-    .dropdown-content {
+    .dropdown-content {{
         display: none;
         position: absolute;
         background-color: #161b22;
         min-width: 240px;
         box-shadow: 0px 10px 24px 0px rgba(0,0,0,0.6);
-        z-index: 10000;
+        z-index: 100000;
         border: 1px solid #30363d;
-        border-radius: 6px;
-        margin-top: 2px;
-    }
+        border-radius: 0 0 6px 6px;
+        top: 100%; 
+        left: 0;
+    }}
 
-    .dropdown-content a {
+    .dropdown-content a {{
         float: none;
         color: #c9d1d9;
-        padding: 12px 18px;
+        padding: 14px 18px;
         text-decoration: none;
         display: block;
         text-align: left;
         font-size: 14px;
         transition: background 0.2s, color 0.2s;
-    }
+    }}
 
-    .dropdown-content a:hover {
+    .dropdown-content a:hover {{
         background-color: #1f6feb33;
         color: #00e676;
         font-weight: 600;
-    }
+    }}
 
-    .dropdown:hover .dropdown-content {
+    .dropdown:hover .dropdown-content {{
         display: block;
-    }
+    }}
 
-    /* Footer Profesional */
-    .fixed-footer {
+    .login-btn {{
+        margin-left: auto;
+        color: #00e676 !important;
+        text-decoration: none;
+        font-weight: bold;
+        padding: 8px 16px;
+        border: 1px solid #00e676;
+        border-radius: 5px;
+        transition: all 0.2s;
+        font-size: 14px;
+    }}
+    .login-btn:hover {{
+        background-color: #00e676;
+        color: #0d1117 !important;
+    }}
+
+    .fixed-footer {{
         position: fixed;
         left: 0;
         bottom: 0;
@@ -164,10 +229,9 @@ st.markdown("""
         border-top: 1px solid #30363d;
         z-index: 9998;
         letter-spacing: 0.3px;
-    }
+    }}
     
-    /* Diseño Minimalista para Tarjetas de Noticias */
-    .news-card {
+    .news-card {{
         background-color: #161b22;
         padding: 22px;
         border-radius: 8px;
@@ -177,112 +241,94 @@ st.markdown("""
         display: flex;
         flex-direction: column;
         transition: transform 0.2s ease, box-shadow 0.2s ease;
-    }
+    }}
 
-    .news-card:hover {
+    .news-card:hover {{
         transform: translateY(-3px);
         box-shadow: 0 6px 16px rgba(0,230,118,0.1);
-    }
+    }}
     
-    .news-card a {
+    .news-card a {{
         color: #58a6ff;
         text-decoration: none;
         margin-top: auto;
         font-weight: 600;
         font-size: 0.9rem;
         transition: color 0.2s;
-    }
+    }}
     
-    .news-card a:hover {
+    .news-card a:hover {{
         color: #00e676;
         text-decoration: underline;
-    }
-    
-    .stButton > button {
-        border-radius: 6px;
-    }
+    }}
 </style>
 
 <div class="navbar">
-<a class="brand" href="/?nav=inicio" target="_self">📊 Monitor Financiero</a>
+<a class="brand" href="?nav=inicio{base_qs}" target="_top">📊 Monitor Financiero</a>
 
 <div class="dropdown">
-<button class="dropbtn">💼 Mi Portafolio ▾</button>
+<button class="dropbtn">💼 Mi Gestión ▾</button>
 <div class="dropdown-content">
-<a href="/?nav=portfolio" target="_self">📈 Ver Portafolio</a>
+<a href="?nav=finanzas{base_qs}" target="_top">💰 Finanzas y Patrimonio</a>
+<a href="?nav=portfolio{base_qs}" target="_top">👀 Watchlist (Seguimiento)</a>
 </div>
 </div>
 
 <div class="dropdown">
 <button class="dropbtn">Internacional ▾</button>
 <div class="dropdown-content">
-<a href="/?nav=int_acciones" target="_self">📈 Acciones Internacionales</a>
-<a href="/?nav=int_bonos" target="_self">📄 Bonos Internacionales</a>
-<a href="/?nav=int_commodities" target="_self">🛢️ Commodities</a>
-<a href="/?nav=int_etfs" target="_self">📊 ETFs Globales</a>
-<a href="/?nav=int_datos" target="_self">🏦 Datos Macroeconómicos</a>
+<a href="?nav=int_acciones{base_qs}" target="_top">📈 Acciones Internacionales</a>
+<a href="?nav=int_bonos{base_qs}" target="_top">📄 Bonos Internacionales</a>
+<a href="?nav=int_commodities{base_qs}" target="_top">🛢️ Commodities</a>
+<a href="?nav=int_etfs{base_qs}" target="_top">📊 ETFs Globales</a>
+<a href="?nav=int_datos{base_qs}" target="_top">🏦 Datos Macroeconómicos</a>
 </div>
 </div>
 <div class="dropdown">
 <button class="dropbtn">Argentina ▾</button>
 <div class="dropdown-content">
-<a href="/?nav=arg_acciones" target="_self">📈 Acciones Locales (Pesos)</a>
-<a href="/?nav=arg_ons" target="_self">📄 Obligaciones Negociables</a>
-<a href="/?nav=arg_bonos" target="_self">📄 Bonos Argentinos</a>
-<a href="/?nav=arg_etfs" target="_self">📊 Índices y ETFs</a>
-<a href="/?nav=arg_datos" target="_self">🏦 Datos Económicos</a>
+<a href="?nav=arg_acciones{base_qs}" target="_top">📈 Acciones Locales (Pesos)</a>
+<a href="?nav=arg_ons{base_qs}" target="_top">📄 Obligaciones Negociables</a>
+<a href="?nav=arg_bonos{base_qs}" target="_top">📄 Bonos Argentinos</a>
+<a href="?nav=arg_etfs{base_qs}" target="_top">📊 Índices y ETFs</a>
+<a href="?nav=arg_datos{base_qs}" target="_top">🏦 Datos Económicos</a>
 </div>
 </div>
 <div class="dropdown">
 <button class="dropbtn">🧮 Herramientas ▾</button>
 <div class="dropdown-content">
-<a href="/?nav=calc_interes" target="_self">📈 Calc. Interés Compuesto</a>
-<a href="/?nav=calc_francesa" target="_self">🏛️ Amortización Francesa</a>
+<a href="?nav=calc_interes{base_qs}" target="_top">📈 Calc. Interés Compuesto</a>
+<a href="?nav=calc_francesa{base_qs}" target="_top">🏛️ Amortización Francesa</a>
 </div>
 </div>
 <div class="dropdown">
 <button class="dropbtn">⚖️ Legal ▾</button>
 <div class="dropdown-content">
-<a href="/?nav=legal" target="_self">📜 Términos y Condiciones</a>
+<a href="?nav=legal{base_qs}" target="_top">📜 Términos y Condiciones</a>
 </div>
 </div>
+
+<a class="login-btn" href="{nav_login_link}" target="_top">{nav_login_text}</a>
 </div>
 """, unsafe_allow_html=True)
 
-# ============================================================
-# 3. RUTEO DE LA APLICACIÓN
-# ============================================================
-nav = st.query_params.get("nav", "inicio")# ============================================================
-# BOTÓN DE PAGO PREMIUM (STRIPE)
-# ============================================================
-st.markdown("---")
-st.subheader("🔓 Acceso Completo y Herramientas Premium")
-st.write("Obtén acceso ilimitado a todos nuestros modelos de amortización y monitores avanzados.")
-
-# AQUÍ PEGAS TU ENLACE DE STRIPE ENTRE LAS COMILLAS
-st.link_button("👉 Suscribirse a Premium Aquí", "https://buy.stripe.com/test_dRmfZ98gH27Q3toh002kw00")
-st.markdown("---")
+nav = st.query_params.get("nav", "inicio")
 
 
 # ============================================================
-# 4. EXTRACCIÓN DE DATOS Y NOTICIAS
+# 3. EXTRACCIÓN DE DATOS Y NOTICIAS
 # ============================================================
 
 @st.cache_data(ttl=300)
 def obtener_datos_globales():
     tickers = {
-        # MACRO Y TASAS
         "Treasury 2Y": "^IRX", "Treasury 5Y": "^FVX", "Treasury 10Y": "^TNX", "Treasury 30Y": "^TYX",
         "Oro": "GC=F", "WTI": "CL=F", "Bitcoin": "BTC-USD",
         "S&P 500 (Índice)": "^GSPC", "SPY (ETF)": "SPY", "QQQ (ETF Nasdaq)": "QQQ", "DIA (ETF Dow)": "DIA",
-        
-        # INTERNACIONALES (Ampliadas)
         "Apple": "AAPL", "Nvidia": "NVDA", "Tesla": "TSLA", "Microsoft": "MSFT",
         "Amazon": "AMZN", "Google": "GOOGL", "Meta": "META", "Nestlé": "NSRGY",
         "Johnson & Johnson": "JNJ", "Coca-Cola": "KO", "Visa": "V", "Walmart": "WMT",
         "JPMorgan": "JPM", "Procter & Gamble": "PG", "Disney": "DIS",
-        
-        # ARGENTINAS (Más de 15)
         "Merval ARS": "^MERV", "SPY (CEDEAR)": "SPY.BA", "QQQ (CEDEAR)": "QQQ.BA",
         "YPF": "YPFD.BA", "Galicia": "GGAL.BA", "Pampa Energía": "PAMP.BA",
         "Banco Macro": "BMA.BA", "Central Puerto": "CEPU.BA", "Aluar": "ALUA.BA",
@@ -331,8 +377,7 @@ def obtener_bonos_argentinos():
                 u = float(hist_close.iloc[-1])
                 p = float(hist_close.iloc[-2])
                 resultado[nombre] = {"precio": u, "var_pct": ((u - p) / p) * 100}
-        except:
-            pass
+        except: pass
 
     try:
         r = requests.get("https://api.argentinadatos.com/v1/finanzas/cotizaciones/bonos", headers=HEADERS, timeout=5)
@@ -347,8 +392,7 @@ def obtener_bonos_argentinos():
                             u = float(df_bono.iloc[-1]["cierre"])
                             p = float(df_bono.iloc[-2]["cierre"])
                             resultado[bono] = {"precio": u, "var_pct": ((u - p) / p) * 100}
-    except:
-        pass
+    except: pass
         
     return resultado
 
@@ -418,32 +462,154 @@ def obtener_noticias_dinamicas():
         if i < len(noticias_arg): noticias_combinadas.append(noticias_arg[i])
 
     if not noticias_combinadas:
-        noticias_combinadas = [{
-            "categoria": "MERCADO", "titulo": "Actualización de Mercado", 
-            "desc": "Revisa los últimos movimientos en los indicadores globales.", "link": "#"
-        }]
+        noticias_combinadas = [{"categoria": "MERCADO", "titulo": "Actualización de Mercado", "desc": "Revisa los últimos movimientos en los indicadores globales.", "link": "#"}]
         
     return noticias_combinadas
+@st.cache_data(ttl=86400) # Se actualiza una vez al día para no saturar
+def obtener_historico_ccl():
+    try:
+        r = requests.get("https://api.argentinadatos.com/v1/cotizaciones/dolares", timeout=5)
+        df = pd.DataFrame(r.json())
+        df_ccl = df[df['casa'] == 'contadoconliqui'].copy()
+        df_ccl['fecha'] = pd.to_datetime(df_ccl['fecha']).dt.date
+        df_ccl = df_ccl.sort_values('fecha')
+        return df_ccl
+    except:
+        return None
 
-# ============================================================
-# 5. CARGA DE DATOS
-# ============================================================
-
+def get_ccl_en_fecha(fecha_str, df_ccl, ccl_actual):
+    if df_ccl is None or df_ccl.empty: return ccl_actual
+    try:
+        # Convertimos el string a objeto date
+        if isinstance(fecha_str, str):
+            fecha_buscada = datetime.strptime(fecha_str, '%Y-%m-%d').date()
+        else:
+            fecha_buscada = fecha_str
+            
+        df_filtrado = df_ccl[df_ccl['fecha'] <= fecha_buscada]
+        if not df_filtrado.empty:
+            return float(df_filtrado.iloc[-1]['venta'])
+        return ccl_actual
+    except:
+        return ccl_actual
 globales = obtener_datos_globales()
 bonos_arg = obtener_bonos_argentinos()
 macro_arg = obtener_macro_argentina()
 noticias_feed = obtener_noticias_dinamicas()
 
+def get_precio_actual(ticker):
+    try:
+        # Si el ticker no tiene punto, intentamos primero buscarlo como activo local con .BA (CEDEAR / Bono / Acción Local)
+        if not ticker.endswith(".BA") and not ticker.endswith("D"):
+            t_local = f"{ticker}.BA"
+            p_local = yf.Ticker(t_local).fast_info.last_price
+            if p_local and p_local > 0:
+                return float(p_local)
+        
+        # Si falla o es un ticker directo de EE.UU.
+        p = yf.Ticker(ticker).fast_info.last_price
+        return float(p) if p and p > 0 else 0.0
+    except:
+        return 0.0
+
+def format_metric(val, is_pct=False):
+    if val is None or val == "-":
+        return "-"
+    try:
+        if is_pct:
+            return f"{(val * 100):.2f}%"
+        if val > 1000000000:
+            return f"${val/1000000000:,.2f} B"
+        if val > 1000000:
+            return f"${val/1000000:,.2f} M"
+        return f"{val:.2f}"
+    except:
+        return str(val)
+
 # ============================================================
-# 6. RENDERIZADO DE LAS PÁGINAS SEGÚN EL MENÚ
+# 4. RENDERIZADO DE LAS PÁGINAS SEGÚN EL MENÚ
 # ============================================================
 
-def formatear_variacion(val):
-    if val > 0: return f"color: #00e676;"
-    elif val < 0: return f"color: #ff4b4b;"
-    return ""
+if nav == "login":
+    st.title("👤 Acceso a Mi Cuenta")
+    
+    if "user_email" not in st.session_state:
+        c1, c2 = st.columns(2)
+        with c1:
+            st.subheader("🔑 Iniciar Sesión")
+            with st.form("login_form"):
+                login_email = st.text_input("Email:")
+                login_pass = st.text_input("Contraseña:", type="password")
+                btn_login = st.form_submit_button("Entrar", use_container_width=True)
+                
+                if btn_login:
+                    db = cargar_db()
+                    if login_email in db:
+                        if db[login_email].get("password") == hash_password(login_pass):
+                            st.session_state.user_email = login_email
+                            
+                            # CÓDIGO CLAVE: Generar el token de sesión seguro
+                            new_token = str(uuid.uuid4())
+                            db[login_email]["session_token"] = new_token
+                            
+                            user_data = db[login_email]
+                            st.session_state.user_data = user_data
+                            guardar_db(db)
+                            
+                            # Inyectar el token en la URL de inmediato
+                            st.query_params["t"] = new_token
+                            
+                            st.success("✅ Sesión iniciada. Navega por el menú superior libremente.")
+                            st.rerun()
+                        else:
+                            st.error("❌ Contraseña incorrecta.")
+                    else:
+                        st.error("❌ El usuario no existe. Regístrate en el panel derecho.")
+                        
+        with c2:
+            st.subheader("📝 Registrar Nueva Cuenta")
+            with st.form("register_form"):
+                reg_email = st.text_input("Nuevo Email:")
+                reg_pass = st.text_input("Nueva Contraseña:", type="password")
+                reg_pass2 = st.text_input("Repetir Contraseña:", type="password")
+                btn_reg = st.form_submit_button("Crear Cuenta", use_container_width=True)
+                
+                if btn_reg:
+                    if not es_correo_valido(reg_email):
+                        st.error("❌ Por favor, ingresa un formato de correo válido.")
+                    elif reg_pass != reg_pass2:
+                        st.error("❌ Las contraseñas no coinciden.")
+                    elif len(reg_pass) < 6:
+                        st.error("❌ La contraseña debe tener al menos 6 caracteres.")
+                    else:
+                        db = cargar_db()
+                        if reg_email in db:
+                            st.error("❌ Este correo ya está registrado.")
+                        else:
+                            nuevo_usuario = default_user_data()
+                            nuevo_usuario["password"] = hash_password(reg_pass)
+                            db[reg_email] = nuevo_usuario
+                            guardar_db(db)
+                            st.success("✅ Cuenta creada con éxito. Inicia sesión a la izquierda.")
 
-if nav == "inicio":
+    else:
+        st.success("✅ Estás conectado de forma segura.")
+        st.markdown(f"**Usuario Logueado:** `{st.session_state.user_email}`")
+        if st.button("🚪 Cerrar Sesión", type="primary"):
+            # Borrar el token de la DB y de la sesión local
+            email = st.session_state.user_email
+            db = cargar_db()
+            if email in db:
+                db[email]["session_token"] = ""
+                guardar_db(db)
+                
+            del st.session_state.user_email
+            del st.session_state.user_data
+            if "t" in st.query_params:
+                del st.query_params["t"]
+            st.rerun()
+
+elif nav == "inicio":
     st.title("📰 Titulares Globales y Locales")
     st.markdown("Revisión de las últimas noticias económicas, puramente informativas y con un diseño centrado en la lectura.")
     st.markdown("<br>", unsafe_allow_html=True)
@@ -451,10 +617,8 @@ if nav == "inicio":
     for i in range(0, len(noticias_feed), 3):
         cols = st.columns(3)
         fila_noticias = noticias_feed[i:i+3]
-        
         for index, articulo in enumerate(fila_noticias):
             with cols[index]:
-                # Diseño minimalista, sin imágenes externas que se rompan
                 card_html = f"""
                 <div class="news-card">
                     <span style='color:#00e676; font-size:0.75rem; font-weight:700; letter-spacing: 1.5px;'>{articulo['categoria']}</span>
@@ -466,293 +630,755 @@ if nav == "inicio":
                 st.markdown(card_html, unsafe_allow_html=True)
                 st.markdown('<div style="margin-bottom: 15px;"></div>', unsafe_allow_html=True)
 
-elif nav == "portfolio":
-    st.title("💼 Mi Portafolio de Inversión")
-    st.markdown("Busca y agrega activos para ver su valuación en tiempo real y sus fechas importantes.")
-    
-    st.markdown("##### 👤 Inicia Sesión para Guardar tu Portafolio")
-    col_login, col_empty = st.columns([1, 1])
-    with col_login:
-        email_usuario = st.text_input("Ingresa tu email para no perder tu progreso:", 
-                                     value=st.session_state.get("user_email", ""),
-                                     placeholder="ejemplo@correo.com")
+elif nav == "finanzas":
+    if not st.session_state.get("user_email"):
+        st.warning("⚠️ Debes iniciar sesión (botón arriba a la derecha) para gestionar tus finanzas personales.")
+    else:
+        st.title("💰 Finanzas, Presupuesto y Patrimonio")
+        user_data = st.session_state.user_data
         
-        if email_usuario and email_usuario != st.session_state.get("user_email", ""):
-            st.session_state.user_email = email_usuario
-            db = cargar_db()
-            if email_usuario not in db:
-                db[email_usuario] = {}
-                guardar_db(db)
-            st.session_state.portfolio = db[email_usuario]
-            st.success("✅ Portafolio cargado exitosamente.")
-            st.rerun()
+        ccl_actual = macro_arg["dolares"].get("contadoconliqui", 1200.0)
+        mep_actual = macro_arg["dolares"].get("mep", macro_arg["dolares"].get("bolsa", 1180.0))
+        df_ccl_hist = obtener_historico_ccl()
 
-    st.divider()
-    
-    with st.expander("➕ Buscar y Agregar Activo (Presiona Enter para buscar)", expanded=True):
-        query = st.text_input("🔍 Escribe el nombre o ticker y presiona Enter (ej. Apple, Galicia, BTC):")
-        opciones_encontradas = {}
-        if query:
-            try:
-                url_search = f"https://query2.finance.yahoo.com/v1/finance/search?q={query}&quotesCount=6"
-                res = requests.get(url_search, headers=HEADERS, timeout=5).json()
-                for q in res.get('quotes', []):
-                    simbolo = q.get('symbol')
-                    nombre = q.get('shortname', q.get('longname', 'Desconocido'))
-                    tipo = q.get('quoteType', 'Asset')
-                    if simbolo:
-                        opciones_encontradas[f"{simbolo} | {nombre} ({tipo})"] = simbolo
-            except:
-                pass
+        # INICIALIZAR VARIABLES DE ESTADO
+        if "edit_inv_id" not in st.session_state:
+            st.session_state.edit_inv_id = None
+        if "vender_inv_ticker" not in st.session_state:
+            st.session_state.vender_inv_ticker = None
 
-        c1, c2, c3 = st.columns([2, 1, 1])
-        with c1:
-            if opciones_encontradas:
-                seleccion = st.selectbox("Selecciona el activo exacto:", list(opciones_encontradas.keys()))
-                nuevo_ticker = opciones_encontradas[seleccion]
+        # SELECTOR GLOBAL DE MONEDA (USD / ARS)
+        st.markdown("### ⚙️ Preferencia de Visualización")
+        modo_moneda_global = st.radio("Mostrar toda la pantalla en:", ["Dólares (USD)", "Pesos Argentinos (ARS)"], horizontal=True, key="global_currency_selector")
+
+        # CÁLCULO DE SALDOS NETOS
+        apps_ars = 0.0
+        apps_usd = 0.0
+        efectivo_ars = 0.0
+        efectivo_usd = 0.0
+        
+        for m in user_data.get("movimientos", []):
+            cat = m.get("tipo")
+            monto = m.get("monto", 0.0)
+            moneda = m.get("moneda", "ARS")
+            descuenta_efectivo = m.get("descuenta_efectivo", True)
+            
+            if cat == "Sueldo / Ingreso":
+                if moneda == "ARS": efectivo_ars += monto
+                else: efectivo_usd += monto
+            elif cat == "Gasto":
+                if moneda == "ARS": efectivo_ars -= abs(monto)
+                else: efectivo_usd -= abs(monto)
+            elif cat == "Transferencia a App (Fondeo)":
+                if descuenta_efectivo:
+                    if moneda == "ARS": efectivo_ars -= abs(monto)
+                    else: efectivo_usd -= abs(monto)
+                if moneda == "ARS": apps_ars += abs(monto)
+                else: apps_usd += abs(monto)
+            elif cat == "Inversión (Compra de Activo)":
+                if moneda == "ARS": apps_ars -= abs(monto)
+                else: apps_usd -= abs(monto)
+            elif cat in ["Ingreso Extraordinario", "Venta de Activo"]:
+                if moneda == "ARS": apps_ars += monto
+                else: apps_usd += monto
+
+        # VALOR ACTUAL DE ACTIVOS EN BROKERS (SOLO ACTIVOS)
+        valor_portafolio_usd = 0.0
+        inversiones_activas = [i for i in user_data.get("inversiones", []) if i.get("estado", "activo") == "activo"]
+        
+        for inv in inversiones_activas:
+            t = inv["ticker"]
+            p_act = get_precio_actual(t)
+            if p_act == 0.0:
+                p_act = inv["precio_compra"]
+
+            tipo_dolar_inv = inv.get("tipo_dolar", "CCL")
+            tasa_ref = mep_actual if tipo_dolar_inv == "MEP" else ccl_actual
+
+            if inv.get("es_cedear") and inv["moneda"] == "ARS":
+                valor_portafolio_usd += (inv["cantidad"] * p_act) / tasa_ref
             else:
-                nuevo_ticker = query.upper().strip()
-                if query: st.caption("No hay sugerencias. Se buscará exactamente este Ticker.")
+                val_orig = inv["cantidad"] * p_act
+                valor_portafolio_usd += val_orig if inv["moneda"] in ['USD', 'MEP'] else val_orig / tasa_ref
 
-        with c2:
-            nueva_cantidad = st.number_input("Cantidad", min_value=0.01, value=1.0, step=0.1)
-            
-        with c3:
-            st.markdown("<br>", unsafe_allow_html=True)
-            if st.button("Agregar a Portafolio", use_container_width=True):
-                if nuevo_ticker:
-                    with st.spinner(f"Verificando cotización de {nuevo_ticker}..."):
-                        try:
-                            precio_test = yf.Ticker(nuevo_ticker).fast_info.last_price
-                            if precio_test and precio_test > 0:
-                                st.session_state.portfolio[nuevo_ticker] = st.session_state.portfolio.get(nuevo_ticker, 0) + nueva_cantidad
-                                sincronizar_cartera() 
-                                st.success(f"¡{nuevo_ticker} agregado con éxito!")
-                                st.rerun()
-                            else:
-                                st.error(f"❌ El activo '{nuevo_ticker}' cotiza a $0.00 o está inactivo.")
-                        except:
-                            st.error(f"❌ No se encontró cotización para el ticker '{nuevo_ticker}'.")
+        # PATRIMONIO NETO TOTAL
+        efectivo_total_usd_eq = efectivo_usd + (efectivo_ars / ccl_actual) + apps_usd + (apps_ars / ccl_actual)
+        patrimonio_total_usd = efectivo_total_usd_eq + valor_portafolio_usd
+        patrimonio_total_ars = patrimonio_total_usd * ccl_actual
 
-    if st.session_state.portfolio:
-        st.markdown("### 📊 Composición Actual")
-        tickers = list(st.session_state.portfolio.keys())
-        precios = {}
+        # 4 TARJETAS SUPERIORES
+        col_m1, col_m2, col_m3, col_m4 = st.columns(4)
         
-        with st.spinner("Actualizando cotizaciones..."):
-            for t in tickers:
-                try: precios[t] = yf.Ticker(t).fast_info.last_price
-                except: precios[t] = 0.0
+        with col_m1:
+            val_mo = patrimonio_total_usd if modo_moneda_global == "Dólares (USD)" else patrimonio_total_ars
+            sim_mo = "USD" if modo_moneda_global == "Dólares (USD)" else "ARS $"
+            st.markdown(f"""
+            <div style="background-color: #161b22; padding: 12px; border-radius: 10px; border: 1px solid #30363d; text-align: center;">
+                <p style="color: #8b949e; margin: 0; font-size: 0.75rem; text-transform: uppercase;">Patrimonio Neto</p>
+                <h4 style="color: #00e676; margin: 5px 0;">{sim_mo} {val_mo:,.2f}</h4>
+            </div>""", unsafe_allow_html=True)
+                
+        with col_m2:
+            val_ef = (efectivo_usd + (efectivo_ars / ccl_actual)) if modo_moneda_global == "Dólares (USD)" else (efectivo_ars + (efectivo_usd * ccl_actual))
+            sim_ef = "USD" if modo_moneda_global == "Dólares (USD)" else "ARS $"
+            st.markdown(f"""
+            <div style="background-color: #161b22; padding: 12px; border-radius: 10px; border: 1px solid #30363d; text-align: center;">
+                <p style="color: #8b949e; margin: 0; font-size: 0.75rem; text-transform: uppercase;">Efectivo / Sueldo</p>
+                <h4 style="color: #58a6ff; margin: 5px 0;">{sim_ef} {val_ef:,.2f}</h4>
+            </div>""", unsafe_allow_html=True)
+
+        with col_m3:
+            val_app = (apps_usd + (apps_ars / ccl_actual)) if modo_moneda_global == "Dólares (USD)" else (apps_ars + (apps_usd * ccl_actual))
+            sim_app = "USD" if modo_moneda_global == "Dólares (USD)" else "ARS $"
+            st.markdown(f"""
+            <div style="background-color: #161b22; padding: 12px; border-radius: 10px; border: 1px solid #30363d; text-align: center;">
+                <p style="color: #8b949e; margin: 0; font-size: 0.75rem; text-transform: uppercase;">Efectivo en Broker</p>
+                <h4 style="color: #d29922; margin: 5px 0;">{sim_app} {val_app:,.2f}</h4>
+            </div>""", unsafe_allow_html=True)
+
+        with col_m4:
+            val_act = valor_portafolio_usd if modo_moneda_global == "Dólares (USD)" else (valor_portafolio_usd * ccl_actual)
+            sim_act = "USD" if modo_moneda_global == "Dólares (USD)" else "ARS $"
+            st.markdown(f"""
+            <div style="background-color: #161b22; padding: 12px; border-radius: 10px; border: 1px solid #30363d; text-align: center;">
+                <p style="color: #8b949e; margin: 0; font-size: 0.75rem; text-transform: uppercase;">Activos en Broker</p>
+                <h4 style="color: #bc8cff; margin: 5px 0;">{sim_act} {val_act:,.2f}</h4>
+            </div>""", unsafe_allow_html=True)
+
+        tab_caja, tab_inversiones = st.tabs(["📅 Flujo de Caja y Transferencias", "💼 Cartera Bursátil y Rendimiento"])
+
+        # ==========================================
+        # PESTAÑA 1: MOVIMIENTOS Y TRANSFERENCIAS
+        # ==========================================
+        with tab_caja:
+            col_caja1, col_caja2 = st.columns([1, 2])
+            
+            with col_caja1:
+                st.markdown("### 📥 Registrar Movimiento / Transferencia")
+                with st.form("mov_mensual_form"):
+                    fecha_mov = st.date_input("Fecha del movimiento")
+                    tipo_mov = st.selectbox("Categoría:", ["Sueldo / Ingreso", "Gasto", "Transferencia a App (Fondeo)", "Ingreso Extraordinario"])
+                    monto_mov = st.number_input("Monto:", min_value=0.01, value=1000.0, step=1000.0)
+                    moneda_mov = st.radio("Moneda:", ["ARS", "USD"], horizontal=True)
+                    detalle_mov = st.text_input("Descripción (Ej. Sueldo, Fondeo IOL):")
                     
-        total_value = 0.0
-        datos_tabla = []
-        
-        for t, qty in list(st.session_state.portfolio.items()):
-            precio_actual = precios.get(t, 0.0)
-            if precio_actual == 0:
-                del st.session_state.portfolio[t]
-                sincronizar_cartera()
-                continue
-                
-            valor_posicion = precio_actual * qty
-            total_value += valor_posicion
-            datos_tabla.append({
-                "Activo (Ticker)": t,
-                "Cantidad": qty,
-                "Precio Mercado": precio_actual,
-                "Valor de la Posición": valor_posicion
-            })
-            
-        if datos_tabla:
-            df_port = pd.DataFrame(datos_tabla)
-            col_tabla, col_grafico = st.columns([1.5, 1])
-            
-            with col_tabla:
-                st.dataframe(df_port.style.format({"Precio Mercado": "${:,.2f}", "Valor de la Posición": "${:,.2f}"}), use_container_width=True, hide_index=True)
-                
-                st.markdown("#### ✏️ Modificar o Quitar Activos")
-                e1, e2, e3 = st.columns([2, 1, 1.5])
-                with e1: activo_a_editar = st.selectbox("Activo a editar:", list(st.session_state.portfolio.keys()))
-                with e2:
-                    cantidad_actual = st.session_state.portfolio.get(activo_a_editar, 1.0)
-                    nueva_cantidad_edit = st.number_input("Nueva cant.", min_value=0.0, value=float(cantidad_actual), step=0.1, help="Pon 0 para eliminar")
-                with e3:
-                    st.markdown("<br>", unsafe_allow_html=True)
-                    if st.button("Actualizar / Eliminar", use_container_width=True):
-                        if nueva_cantidad_edit <= 0: del st.session_state.portfolio[activo_a_editar]
-                        else: st.session_state.portfolio[activo_a_editar] = nueva_cantidad_edit
-                        sincronizar_cartera()
+                    descuenta_efec = False
+                    if tipo_mov == "Transferencia a App (Fondeo)":
+                        descuenta_efec = st.checkbox("Descontar este monto de mi Efectivo / Sueldo común", value=False)
+                    
+                    if st.form_submit_button("Guardar Movimiento"):
+                        monto_guardar = abs(monto_mov) if tipo_mov in ["Sueldo / Ingreso", "Transferencia a App (Fondeo)", "Ingreso Extraordinario"] else -abs(monto_mov)
+                        user_data["movimientos"].append({
+                            "id": str(uuid.uuid4()), "fecha": str(fecha_mov),
+                            "tipo": tipo_mov, "monto": monto_guardar, 
+                            "moneda": moneda_mov, "detalle": detalle_mov,
+                            "descuenta_efectivo": descuenta_efec
+                        })
+                        sincronizar_datos()
+                        st.success("✅ Registrado con éxito.")
                         st.rerun()
+
+            with col_caja2:
+                st.markdown("### 📋 Historial de Movimientos")
+                if user_data.get("movimientos"):
+                    for m in sorted(user_data["movimientos"], key=lambda x: x['fecha']):
+                        with st.container(border=True):
+                            c_t, c_e = st.columns([4, 1])
+                            with c_t:
+                                monto_visual = abs(m['monto'])
+                                color_m = "#00e676" if (m['monto'] > 0 or m['tipo'] == "Transferencia a App (Fondeo)") else "#ff4b4b"
+                                st.markdown(f"**{m['fecha']}** | {m['detalle']} (`{m['tipo']}`)")
+                                st.markdown(f"<span style='color:{color_m}; font-weight:bold;'>{m['moneda']} {monto_visual:,.2f}</span>", unsafe_allow_html=True)
+                            with c_e:
+                                st.markdown("<br>", unsafe_allow_html=True)
+                                if st.button("🗑️", key=f"del_btn_{m['id']}"):
+                                    mov_id = m['id']
+                                    user_data["movimientos"] = [x for x in user_data["movimientos"] if x["id"] != mov_id]
+                                    user_data["inversiones"] = [i for i in user_data.get("inversiones", []) if i.get("mov_id") != mov_id]
+                                    sincronizar_datos()
+                                    st.success("Eliminado y sincronizado.")
+                                    st.rerun()
+                else:
+                    st.info("No hay movimientos registrados.")
+
+        # ==========================================
+        # PESTAÑA 2: CARTERA BURSÁTIL Y RENDIMIENTO
+        # ==========================================
+        with tab_inversiones:
+            st.markdown("### 📈 Registro de Activos Bursátiles")
+            
+            with st.expander("➕ Registrar Compra de Activo", expanded=False):
+                with st.form("inv_form_ccl"):
+                    diccionario_activos = {
+                        "Bono Bonares AL29 (AL29)": "AL29.BA",
+                        "Bono Bonares AL30 (AL30)": "AL30.BA",
+                        "Bono Bonares AL30D (AL30D)": "AL30D",
+                        "Bono Global GD30 (GD30)": "GD30.BA",
+                        "Bono Global GD30D (GD30D)": "GD30D",
+                        "Bono Global GD35 (GD35)": "GD35.BA",
+                        "Bono Global GD38 (GD38)": "GD38.BA",
+                        "Bono Global GD41 (GD41)": "GD41.BA",
+                        "Meta Platforms - CEDEAR (META)": "META",
+                        "Apple - CEDEAR (AAPL)": "AAPL",
+                        "Nvidia - CEDEAR (NVDA)": "NVDA",
+                        "Tesla - CEDEAR (TSLA)": "TSLA",
+                        "Microsoft - CEDEAR (MSFT)": "MSFT",
+                        "Amazon - CEDEAR (AMZN)": "AMZN",
+                        "Alphabet / Google - CEDEAR (GOOGL)": "GOOGL",
+                        "Mercado Libre - CEDEAR (MELI)": "MELI",
+                        "Johnson & Johnson - CEDEAR (JNJ)": "JNJ",
+                        "Starbucks - CEDEAR (SBUX)": "SBUX",
+                        "AMD - CEDEAR (AMD)": "AMD",
+                        "Intel - CEDEAR (INTC)": "INTC",
+                        "Coca-Cola - CEDEAR (KO)": "KO",
+                        "Disney - CEDEAR (DIS)": "DIS",
+                        "Netflix - CEDEAR (NFLX)": "NFLX",
+                        "Visa - CEDEAR (V)": "V",
+                        "Mastercard - CEDEAR (MA)": "MA",
+                        "JPMorgan Chase - CEDEAR (JPM)": "JPM",
+                        "Procter & Gamble - CEDEAR (PG)": "PG",
+                        "Walmart - CEDEAR (WMT)": "WMT",
+                        "Berkshire Hathaway - CEDEAR (BRK.B)": "BRK.B",
+                        "Pfizer - CEDEAR (PFE)": "PFE",
+                        "Bank of America - CEDEAR (BAC)": "BAC",
+                        "Citigroup - CEDEAR (C.BA)": "C.BA",
+                        "S&P 500 ETF (SPY.BA)": "SPY.BA",
+                        "Invesco Nasdaq (QQQ.BA)": "QQQ.BA",
+                        "YPF - Acción Local (YPFD.BA)": "YPFD.BA",
+                        "Grupo Financiero Galicia - Acción Local (GGAL.BA)": "GGAL.BA",
+                        "Pampa Energía - Acción Local (PAMP.BA)": "PAMP.BA",
+                        "Banco Macro - Acción Local (BMA.BA)": "BMA.BA",
+                        "Aluar - Acción Local (ALUA.BA)": "ALUA.BA",
+                        "Ternium - Acción Local (TXAR.BA)": "TXAR.BA"
+                    }
+                    
+                    busqueda_input = st.selectbox("🔍 Buscar Activo:", list(diccionario_activos.keys()))
+                    ticker_inv = diccionario_activos[busqueda_input]
+                    
+                    c_i2, c_i3 = st.columns(2)
+                    with c_i2: 
+                        cant_inv = st.number_input("Cantidad / Nominal:", min_value=1, value=1, step=1, format="%d")
+                    with c_i3: 
+                        fecha_inv = st.date_input("Fecha de Compra:")
+                    
+                    modo_precio = st.radio("¿Cómo deseas ingresar el valor de compra?", ["Precio Unitario", "Monto Total de la Operación"], horizontal=True, key="modo_precio_radio")
+                    
+                    c_i4, c_i5, c_i6, c_i7 = st.columns(4)
+                    
+                    if modo_precio == "Precio Unitario":
+                        with c_i4: 
+                            p_unit = st.number_input("Precio Unitario:", min_value=0.01, value=1000.0, step=100.0, key="input_precio_unitario_real")
+                        precio_inv = p_unit
+                    else:
+                        with c_i4: 
+                            m_total = st.number_input("Monto Total de la Operación:", min_value=0.01, value=10000.0, step=1000.0, key="input_monto_total_real")
+                        precio_inv = m_total / cant_inv
+
+                    with c_i5: mon_inv = st.selectbox("Moneda:", ["ARS", "USD", "MEP"])
+                    with c_i6: tipo_dolar_op = st.selectbox("Tipo de Dólar:", ["CCL", "MEP"])
+                    
+                    es_cedear_default = "CEDEAR" in busqueda_input or "Acción Local" in busqueda_input or "Bono" in busqueda_input
+                    with c_i7: es_cedear = st.checkbox("Ajustar", value=es_cedear_default)
+
+                    # 💡 Calcular y mostrar el precio actual de mercado ya con los selectores definidos
+                    p_bruto = get_precio_actual(ticker_inv)
+                    tasa_conv = ccl_actual if tipo_dolar_op == "CCL" else mep_actual
+                    
+                    if p_bruto > 0:
+                        if ".BA" in ticker_inv or not ticker_inv.endswith("D") and ticker_inv not in ["META", "AAPL", "NVDA", "TSLA", "MSFT", "AMZN", "GOOGL", "MELI", "JNJ", "SBUX", "AMD", "INTC", "KO", "DIS", "NFLX", "V", "MA", "JPM", "PG", "WMT", "BRK.B", "PFE", "BAC"]:
+                            precio_previo = p_bruto / tasa_conv
+                            simbolo_precio = f"USD (convertido con {tipo_dolar_op})"
+                        else:
+                            precio_previo = p_bruto
+                            simbolo_precio = "USD"
+                            
+                        st.info(f"💡 **Precio actual de mercado:** `{simbolo_precio} {precio_previo:,.2f}` (Valor local: $ {p_bruto:,.2f} ARS)")
+                    else:
+                        st.warning("⚠️ No se pudo obtener la cotización en vivo de este activo en este momento.")
+
+                    c_i2, c_i3 = st.columns(2)
+                    with c_i2: 
+                        cant_inv = st.number_input("Cantidad / Nominal:", min_value=1, value=1, step=1, format="%d", key="input_cantidad_nominal")
+                    with c_i3: 
+                        fecha_inv = st.date_input("Fecha de Compra:", key="input_fecha_compra_activa")
+                    
+                    modo_precio = st.radio("¿Cómo deseas ingresar el valor de compra?", ["Precio Unitario", "Monto Total de la Operación"], horizontal=True, key="modo_precio_compra_activo_nuevo")
+                    
+                    c_i4, c_i5, c_i6, c_i7 = st.columns(4)
+                    
+                    if modo_precio == "Precio Unitario":
+                        with c_i4: 
+                            p_unit = st.number_input("Precio Unitario:", min_value=0.01, value=1000.0, step=100.0, key="input_precio_unitario_compra_nueva")
+                        precio_inv = p_unit
+                    else:
+                        with c_i4: 
+                            m_total = st.number_input("Monto Total de la Operación:", min_value=0.01, value=10000.0, step=1000.0, key="input_monto_total_compra_nueva")
+                        precio_inv = m_total / cant_inv
+
+                    with c_i5: mon_inv = st.selectbox("Moneda:", ["ARS", "USD", "MEP"], key="selectbox_moneda_compra_nueva")
+                    with c_i6: tipo_dolar_op = st.selectbox("Tipo de Dólar:", ["CCL", "MEP"], key="selectbox_tipo_dolar_compra_nueva")
+                    
+                    es_cedear_default = "CEDEAR" in busqueda_input or "Acción Local" in busqueda_input or "Bono" in busqueda_input
+                    with c_i7: es_cedear = st.checkbox("Ajustar", value=es_cedear_default, key="checkbox_ajustar_compra_nueva")
+                    
+                    st.markdown("---")
+                    nota_compra = st.text_input("💬 Nota / Motivo:")
+                    descontar_app = st.checkbox("💳 Descontar costo total de Efectivo en Broker", value=True)
+                    
+                    if st.form_submit_button("Guardar Compra"):
+                        if ticker_inv:
+                            costo_total = precio_inv * cant_inv
+                            mov_id = str(uuid.uuid4())
+                            inv_id = str(uuid.uuid4())
+                            
+                            if descontar_app:
+                                user_data["movimientos"].append({
+                                    "id": mov_id, "fecha": str(fecha_inv),
+                                    "tipo": "Inversión (Compra de Activo)", "monto": -costo_total, 
+                                    "moneda": mon_inv, "detalle": f"Compra {busqueda_input}"
+                                })
+
+                            user_data["inversiones"].append({
+                                "id": inv_id, "mov_id": mov_id, "ticker": ticker_inv, "cantidad": float(cant_inv),
+                                "precio_compra": precio_inv, "moneda": mon_inv, "tipo_dolar": tipo_dolar_op,
+                                "fecha": str(fecha_inv), "es_cedear": es_cedear, "nota": nota_compra, "estado": "activo", "nombre_completo": busqueda_input
+                            })
+                            sincronizar_datos()
+                            st.success(f"✅ Compra registrada correctamente.")
+                            st.rerun()
+
+            # ACTIVOS ACTIVOS EN CARTERA CON CÁLCULO HISTÓRICO Y SELECCIÓN DE DÓLAR
+            inversiones_activas = [i for i in user_data.get("inversiones", []) if i.get("estado", "activo") == "activo"]
+            if inversiones_activas:
+                st.markdown("#### 📊 Consolidado de Activos Activos")
+                activos_agrupados = {}
+                for inv in inversiones_activas:
+                    t = inv.get("nombre_completo", inv["ticker"])
+                    if t not in activos_agrupados:
+                        activos_agrupados[t] = []
+                    activos_agrupados[t].append(inv)
+
+                for ticker_label, compras in activos_agrupados.items():
+                    ticker_real = compras[0]["ticker"]
+                    p_actual_mercado = get_precio_actual(ticker_real)
+                    if p_actual_mercado == 0.0:
+                        p_actual_mercado = compras[0]["precio_compra"]
+
+                    cantidad_total = sum(c['cantidad'] for c in compras)
+                    inversion_total_ars = sum(c['cantidad'] * c['precio_compra'] for c in compras if c['moneda'] == 'ARS')
+                    
+                    inversion_total_usd_hist = 0.0
+                    for c in compras:
+                        monto_c = c['cantidad'] * c['precio_compra']
+                        tipo_d = c.get("tipo_dolar", "CCL")
+                        tasa_ref_hist = mep_actual if tipo_d == "MEP" else ccl_actual
+
+                        if c.get('es_cedear') and c['moneda'] == 'ARS':
+                            ccl_c = get_ccl_en_fecha(c['fecha'], df_ccl_hist, tasa_ref_hist)
+                            inversion_total_usd_hist += monto_c / ccl_c
+                        elif c['moneda'] in ['USD', 'MEP']:
+                            inversion_total_usd_hist += monto_c
+                        else:
+                            inversion_total_usd_hist += monto_c / tasa_ref_hist
+
+                    es_cedear_activo = compras[0].get('es_cedear', True) and compras[0]['moneda'] == 'ARS'
+                    tipo_d_activo = compras[0].get("tipo_dolar", "CCL")
+                    tasa_ref_act = mep_actual if tipo_d_activo == "MEP" else ccl_actual
+
+                    if es_cedear_activo:
+                        valor_actual_usd_tot = (cantidad_total * p_actual_mercado) / tasa_ref_act
+                    else:
+                        valor_actual_usd_tot = (cantidad_total * p_actual_mercado) if compras[0]['moneda'] in ['USD', 'MEP'] else (cantidad_total * p_actual_mercado) / tasa_ref_act
+
+                    rend_total_pct = ((valor_actual_usd_tot - inversion_total_usd_hist) / inversion_total_usd_hist) * 100 if inversion_total_usd_hist > 0 else 0
+                    color_rend = "#00e676" if (valor_actual_usd_tot - inversion_total_usd_hist) >= 0 else "#ff4b4b"
+
+                    with st.container(border=True):
+                        c_tit, c_vend, c_del = st.columns([2.5, 1, 0.8])
+                        with c_tit:
+                            st.markdown(f"### 🏷️ {ticker_label} (Total un: {int(cantidad_total)})")
+                        with c_vend:
+                            st.markdown("<br>", unsafe_allow_html=True)
+                            if st.button(f"💵 Vender", key=f"btn_vender_{ticker_real}_{ticker_label}"):
+                                st.session_state.vender_inv_ticker = (ticker_real, ticker_label)
+                                st.rerun()
+                        with c_del:
+                            st.markdown("<br>", unsafe_allow_html=True)
+                            if st.button("🗑️ Borrar", key=f"btn_del_inv_directo_{ticker_real}_{ticker_label}"):
+                                ids_a_borrar = [c['id'] for c in compras]
+                                mov_ids_a_borrar = [c.get('mov_id') for c in compras if c.get('mov_id')]
+                                
+                                user_data["inversiones"] = [i for i in user_data["inversiones"] if i['id'] not in ids_a_borrar]
+                                user_data["movimientos"] = [m for m in user_data.get("movimientos", []) if m['id'] not in mov_ids_a_borrar]
+                                
+                                sincronizar_datos()
+                                st.success("✅ Activo eliminado correctamente.")
+                                st.rerun()
                         
-                st.markdown("<br>", unsafe_allow_html=True)
-                if st.button("🗑️ Vaciar Todo el Portafolio", use_container_width=False):
-                    st.session_state.portfolio = {}
-                    sincronizar_cartera()
+                        if modo_moneda_global == "Dólares (USD)":
+                            val_act_str = f"USD {valor_actual_usd_tot:,.2f}"
+                            inv_str = f"USD {inversion_total_usd_hist:,.2f}"
+                        else:
+                            inv_tot_ars_most = inversion_total_ars if compras[0]['moneda'] == 'ARS' else inversion_total_usd_hist * tasa_ref_act
+                            val_act_ars_most = cantidad_total * p_actual_mercado if es_cedear_activo else valor_actual_usd_tot * tasa_ref_act
+                            inv_str = f"ARS ${inv_tot_ars_most:,.2f}"
+                            val_act_str = f"ARS ${val_act_ars_most:,.2f}"
+
+                        st.markdown(
+                            f"💰 **Invertido:** {inv_str} | "
+                            f"📈 **Valor Actual:** <span style='color:{color_rend}; font-weight:bold;'>{val_act_str} ({rend_total_pct:+.2f}%)</span>",
+                            unsafe_allow_html=True
+                        )
+
+            # FORMULARIO DE VENTA CON SLIDER ENTERO
+            if st.session_state.get("vender_inv_ticker"):
+                t_real, t_label = st.session_state.vender_inv_ticker
+                compras_activas_ticker = [i for i in user_data.get("inversiones", []) if i["ticker"] == t_real and i.get("nombre_completo", i["ticker"]) == t_label and i.get("estado", "activo") == "activo"]
+                max_unidades = int(sum(c['cantidad'] for c in compras_activas_ticker))
+                
+                st.markdown("---")
+                st.markdown(f"#### 💸 Registrar Venta de {t_label}")
+                
+                if max_unidades > 0:
+                    with st.form("form_vender_activo"):
+                        fecha_venta = st.date_input("Fecha de venta:")
+                        cant_a_vender = st.slider("Unidades a vender:", min_value=1, max_value=max_unidades, value=max_unidades, step=1)
+                        monto_recibido = st.number_input("Dinero total recibido:", min_value=0.01, value=1000.0, step=100.0)
+                        moneda_venta = st.radio("Moneda:", ["ARS", "USD", "MEP"], horizontal=True)
+                        
+                        if st.form_submit_button("Confirmar Venta y Sumar a Efectivo en Broker"):
+                            user_data["movimientos"].append({
+                                "id": str(uuid.uuid4()), "fecha": str(fecha_venta),
+                                "tipo": "Venta de Activo", "monto": monto_recibido, 
+                                "moneda": moneda_venta, "detalle": f"Venta de {cant_a_vender} un. de {t_label}"
+                            })
+                            
+                            res = float(cant_a_vender)
+                            for c in compras_activas_ticker:
+                                if res <= 0: break
+                                if c['cantidad'] <= res:
+                                    res -= c['cantidad']
+                                    c['estado'] = 'vendido'
+                                    c['fecha_venta'] = str(fecha_venta)
+                                    c['monto_venta'] = monto_recibido
+                                    c['moneda_venta'] = moneda_venta
+                                else:
+                                    c['cantidad'] -= res
+                                    res = 0
+                                    
+                            sincronizar_datos()
+                            st.session_state.vender_inv_ticker = None
+                            st.success("✅ Venta registrada y sumada a tu efectivo en broker.")
+                            st.rerun()
+
+            # HISTORIAL DE INVERSIONES VENDIDAS
+            inversiones_vendidas = [i for i in user_data.get("inversiones", []) if i.get("estado") == "vendido"]
+            if inversiones_vendidas:
+                st.markdown("---")
+                st.markdown("#### 🏆 Historial de Inversiones Vendidas (Rendimiento Realizado)")
+                for vend in inversiones_vendidas:
+                    with st.container(border=True):
+                        m_compra = vend['cantidad'] * vend['precio_compra']
+                        m_venta = vend.get('monto_venta', 0.0)
+                        ganancia = m_venta - m_compra
+                        color_g = "#00e676" if ganancia >= 0 else "#ff4b4b"
+                        label_v = vend.get("nombre_completo", vend["ticker"])
+                        
+                        st.markdown(f"**{label_v}** | Vendido el {vend.get('fecha_venta', 'N/A')}")
+                        st.markdown(f"• **Compra:** {vend['fecha']} ({int(vend['cantidad'])} un. a {vend['moneda']} {vend['precio_compra']:,.2f})")
+                        st.markdown(f"• **Resultado Realizado:** <span style='color:{color_g}; font-weight:bold;'>{vend.get('moneda_venta', 'ARS')} {ganancia:+,.2f}</span>", unsafe_allow_html=True)
+
+elif nav == "portfolio":
+    if not st.session_state.get("user_email"):
+        st.warning("⚠️ Debes iniciar sesión para guardar tu Watchlist de seguimiento.")
+    else:
+        st.title("👀 Watchlist (Seguimiento de Activos)")
+        st.markdown("Agrega empresas o bonos que quieras vigilar periódicamente. Para registrar compras que afecten tu patrimonio, usa la pestaña de **Finanzas**.")
+        user_data = st.session_state.user_data
+        
+        col_w1, col_w2 = st.columns([3, 1])
+        with col_w1:
+            nuevo_ticker_w = st.text_input("🔍 Ticker a vigilar (Ej. TSLA, YPFD.BA):").upper().strip()
+        with col_w2:
+            st.markdown("<br>", unsafe_allow_html=True)
+            if st.button("Añadir a Watchlist", use_container_width=True):
+                if nuevo_ticker_w:
+                    with st.spinner("Verificando..."):
+                        if get_precio_actual(nuevo_ticker_w) > 0:
+                            if nuevo_ticker_w not in user_data.get("watchlist", []):
+                                user_data.setdefault("watchlist", []).append(nuevo_ticker_w)
+                                sincronizar_datos()
+                                st.success("Añadido a la Watchlist.")
+                                st.rerun()
+                        else:
+                            st.error("No se encontró el activo.")
+
+        if user_data.get("watchlist"):
+            st.markdown("### 📊 Tablero de Cotizaciones")
+            datos_wl = []
+            for t in user_data["watchlist"]:
+                try:
+                    hist = yf.Ticker(t).history(period="2d")
+                    if len(hist) >= 2:
+                        p_act = float(hist['Close'].iloc[-1])
+                        p_prev = float(hist['Close'].iloc[-2])
+                        var_pct = ((p_act - p_prev) / p_prev) * 100
+                    else:
+                        p_act = get_precio_actual(t)
+                        var_pct = 0.0
+                    datos_wl.append({"Activo": t, "Precio Mercado": p_act, "Variación 24hs (%)": var_pct, "Quitar": t})
+                except:
+                    pass
+
+            if datos_wl:
+                df_wl = pd.DataFrame(datos_wl)
+                
+                cols_w = st.columns(4)
+                for idx, row in df_wl.iterrows():
+                    with cols_w[idx % 4]:
+                        color_w = "#00e676" if row['Variación 24hs (%)'] >= 0 else "#ff4b4b"
+                        st.markdown(f"""
+                        <div style="background-color: #161b22; padding: 15px; border-radius: 8px; border: 1px solid #30363d; margin-bottom: 15px;">
+                            <h4 style="margin:0; color:#c9d1d9;">{row['Activo']}</h4>
+                            <h2 style="margin:5px 0; color:#f0f6fc;">${row['Precio Mercado']:,.2f}</h2>
+                            <p style="margin:0; color:{color_w}; font-weight:bold;">{row['Variación 24hs (%)']:+.2f}%</p>
+                        </div>
+                        """, unsafe_allow_html=True)
+                
+                st.markdown("#### Eliminar de Watchlist")
+                quitar_t = st.selectbox("Selecciona un activo para dejar de vigilar:", ["-"] + user_data["watchlist"])
+                if quitar_t != "-" and st.button("Eliminar"):
+                    user_data["watchlist"].remove(quitar_t)
+                    sincronizar_datos()
                     st.rerun()
-                    
-            with col_grafico:
-                st.metric("Valuación Total Estimada", f"${total_value:,.2f}")
-                if total_value > 0:
-                    fig = go.Figure(data=[go.Pie(labels=df_port["Activo (Ticker)"], values=df_port["Valor de la Posición"], hole=.45, marker_colors=['#00e676', '#58a6ff', '#1f6feb', '#8b949e', '#f0f6fc'])])
-                    fig.update_layout(plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)', font=dict(color='#c9d1d9'), margin=dict(t=10, b=10, l=10, r=10), showlegend=True)
-                    st.plotly_chart(fig, use_container_width=True)
 
-# ----------------- SECCIÓN INTERNACIONAL CON TABLA Y RATIOS SEPARADOS -----------------
 elif nav == "int_acciones":
-    st.title("📈 Acciones Internacionales")
-    
-    int_keys = ["Apple", "Nvidia", "Tesla", "Microsoft", "Amazon", "Google", "Meta", "Nestlé", "Johnson & Johnson", "Coca-Cola", "Visa", "Walmart", "JPMorgan", "Procter & Gamble", "Disney"]
-    
-    st.markdown("### 🌐 Panel General de Cotizaciones")
-    
-    data_int = []
-    for key in int_keys:
-        d = globales.get(key)
-        if d:
-            data_int.append({
-                "Activo": key,
-                "Precio": d['precio'],
-                "Variación (%)": d['var_pct']
-            })
-            
-    if data_int:
-        df_int = pd.DataFrame(data_int)
-        st.dataframe(
-            df_int.style.format({"Precio": "USD {:,.2f}", "Variación (%)": "{:,.2f}%"})
-            .map(lambda x: formatear_variacion(x), subset=['Variación (%)']),
-            use_container_width=True, hide_index=True
-        )
-                
-    st.divider()
-    st.subheader("🔎 Análisis Detallado por Empresa")
-    activo_seleccionado = st.selectbox("Selecciona una empresa internacional para ver su información financiera contable y noticias:", int_keys)
-    
-    if activo_seleccionado and globales.get(activo_seleccionado):
-        ticker_str = globales[activo_seleccionado]['ticker']
-        with st.spinner(f"Descargando datos de {activo_seleccionado}..."):
-            try:
-                tk = yf.Ticker(ticker_str)
-                info = tk.info
-                
-                tab_info, tab_fin, tab_news = st.tabs(["📊 Perfil y Ratios", "📉 Información Contable", "📰 Noticias"])
-                
-                with tab_info:
-                    st.write(f"**Sector:** {info.get('sector', '-')} | **Industria:** {info.get('industry', '-')}")
-                    st.write(info.get('longBusinessSummary', 'Sin descripción disponible.'))
-                    
-                    st.markdown("<br>#### Ratios y Métricas Clave", unsafe_allow_html=True)
-                    c1, c2, c3, c4 = st.columns(4)
-                    
-                    mcap = info.get('marketCap')
-                    c1.metric("Market Cap", f"$ {mcap:,}" if mcap else "-")
-                    
-                    pe = info.get('trailingPE')
-                    c2.metric("P/E (Price to Earnings)", round(pe, 2) if pe else "-")
-                    
-                    pb = info.get('priceToBook')
-                    c3.metric("P/B (Price to Book)", round(pb, 2) if pb else "-")
-                    
-                    eps = info.get('trailingEps')
-                    c4.metric("BPA / EPS", f"$ {eps:.2f}" if eps else "-")
-                    
-                with tab_fin:
-                    st.markdown("*(Estado de Resultados. Valores expresados en la moneda original del reporte, con separadores de miles)*")
-                    df_fin = tk.financials
-                    if df_fin is not None and not df_fin.empty:
-                        # Formato limpio con comas (Ej: 112,010,000,000)
-                        st.dataframe(df_fin.style.format("{:,.0f}", na_rep="-"), use_container_width=True)
-                    else:
-                        st.info("Estados contables no disponibles temporalmente.")
-                    
-                with tab_news:
-                    noticias = tk.news
-                    if noticias:
-                        for n in noticias[:5]:
-                            st.markdown(f"**[{n['title']}]({n['link']})**")
-                    else:
-                        st.info("No hay noticias recientes para mostrar.")
-            except Exception:
-                st.info("No se pudieron obtener todos los detalles de este activo en este momento.")
+    if "empresa_seleccionada" not in st.session_state:
+        st.session_state.empresa_seleccionada = None
 
-# ----------------- SECCIÓN ARGENTINA CON TABLA Y RATIOS SEPARADOS -----------------
+    if st.session_state.empresa_seleccionada:
+        emp = st.session_state.empresa_seleccionada
+        
+        if st.button("⬅️ Volver al listado de acciones"):
+            st.session_state.empresa_seleccionada = None
+            st.rerun()
+            
+        st.title(f"📊 Análisis Detallado: {emp}")
+        datos_globales = obtener_datos_globales()
+        ticker_info = datos_globales.get(emp)
+        
+        if ticker_info:
+            ticker_str = ticker_info["ticker"]
+            with st.spinner(f"Descargando datos financieros de {ticker_str}..."):
+                try:
+                    tk = yf.Ticker(ticker_str)
+                    info = tk.info
+                    
+                    tab_info, tab_fin, tab_news = st.tabs(["📋 Ratios y Métricas", "📊 Información Contable", "📰 Noticias"])
+                    
+                    with tab_info:
+                        st.subheader("🔍 Ratios Clave de Rentabilidad y Valoración")
+                        c1, c2, c3, c4 = st.columns(4)
+                        c1.metric("P/E (Price to Earnings)", format_metric(info.get('trailingPE')))
+                        c2.metric("P/B (Price to Book)", format_metric(info.get('priceToBook')))
+                        c3.metric("BPA / EPS", format_metric(info.get('trailingEps')))
+                        c4.metric("Capitalización (Mcap)", format_metric(info.get('marketCap')))
+                        
+                        c5, c6, c7, c8 = st.columns(4)
+                        c5.metric("ROE (Rent. Capital)", format_metric(info.get('returnOnEquity'), True))
+                        c6.metric("ROA (Rent. Activos)", format_metric(info.get('returnOnAssets'), True))
+                        c7.metric("Margen Neto", format_metric(info.get('profitMargins'), True))
+                        c8.metric("ROIC (Est.)", format_metric(info.get('operatingMargins'), True))
+
+                    with tab_fin:
+                        st.subheader("📋 Estado de Resultados")
+                        df_fin = tk.financials
+                        if df_fin is not None and not df_fin.empty:
+                            st.dataframe(df_fin.style.format("{:,.0f}", na_rep="-"), use_container_width=True)
+                        else:
+                            st.info("Estados contables no disponibles de forma directa.")
+
+                    with tab_news:
+                        st.subheader("📰 Últimas Noticias")
+                        try:
+                            noticias = tk.news
+                            if noticias:
+                                for n in noticias[:6]:
+                                    titulo_nota = n.get('title') or "Ver noticia"
+                                    link_nota = n.get('link') or "#"
+                                    editor = n.get('publisher') or "Yahoo Finance"
+                                    
+                                    img_url = None
+                                    try:
+                                        img_url = n['thumbnail']['resolutions'][0]['url']
+                                    except:
+                                        pass
+                                    
+                                    col_img, col_txt = st.columns([1, 4])
+                                    with col_img:
+                                        if img_url:
+                                            st.image(img_url, use_container_width=True)
+                                        else:
+                                            st.markdown("📰")
+                                    with col_txt:
+                                        st.markdown(f"**[{titulo_nota}]({link_nota})**")
+                                        st.caption(f"Fuente: {editor}")
+                                    st.markdown("---")
+                            else:
+                                st.info("No hay noticias recientes disponibles.")
+                        except:
+                            st.info("Sección de noticias temporalmente no disponible.")
+                except Exception as e:
+                    st.info("Datos resumidos temporalmente.")
+        else:
+            st.error("No se encontraron datos para esta empresa.")
+            
+    else:
+        st.title("📈 Acciones Internacionales")
+        filtro = st.text_input("🔍 Buscar por Nombre de Empresa o Ticker:", "").strip().lower()
+        
+        datos_globales = obtener_datos_globales()
+        int_keys = ["Apple", "Nvidia", "Tesla", "Microsoft", "Amazon", "Google", "Meta", "Nestlé", "Johnson & Johnson", "Coca-Cola", "Visa", "Walmart", "JPMorgan", "Procter & Gamble", "Disney"]
+        
+        st.markdown("---")
+        for emp in int_keys:
+            ticker_info = datos_globales.get(emp)
+            if ticker_info:
+                ticker = ticker_info["ticker"]
+                precio = ticker_info["precio"]
+                var = ticker_info["var_pct"]
+                color = "#00e676" if var >= 0 else "#ff1744"
+                
+                if filtro in emp.lower() or filtro in ticker.lower():
+                    col_name, col_price, col_var, col_btn = st.columns(4)
+                    with col_name:
+                        st.markdown(f"**{emp}** `({ticker})`")
+                    with col_price:
+                        st.markdown(f"${precio:,.2f}")
+                    with col_var:
+                        st.markdown(f"<span style='color:{color}; font-weight:bold;'>{var:+.2f}%</span>", unsafe_allow_html=True)
+                    with col_btn:
+                        if st.button("ℹ️ Más info", key=f"btn_{ticker}"):
+                            st.session_state.empresa_seleccionada = emp
+                            st.rerun()
+                    
+                    st.markdown("<hr style='margin: 8px 0; border: 0.5px solid #30363d;'>", unsafe_allow_html=True)
+
 elif nav == "arg_acciones":
-    st.title("📈 Acciones Locales (Merval)")
-    
-    arg_keys = ["YPF", "Galicia", "Pampa Energía", "Banco Macro", "Central Puerto", "Aluar", "Ternium", "Loma Negra", "Trans. Gas del Norte", "Trans. Gas del Sur", "Edenor", "Transener", "BYMA", "Valo", "Mirgor", "Supervielle", "BBVA AR", "Cablevisión", "Richmond", "Agrometal"]
-    
-    st.markdown("### 🇦🇷 Panel General de Cotizaciones (Pesos)")
-    
-    data_arg = []
-    for key in arg_keys:
-        d = globales.get(key)
-        if d:
-            data_arg.append({
-                "Activo": key,
-                "Precio": d['precio'],
-                "Variación (%)": d['var_pct']
-            })
+    if "empresa_arg_seleccionada" not in st.session_state:
+        st.session_state.empresa_arg_seleccionada = None
+
+    if st.session_state.empresa_arg_seleccionada:
+        emp = st.session_state.empresa_arg_seleccionada
+        
+        if st.button("⬅️ Volver al listado local"):
+            st.session_state.empresa_arg_seleccionada = None
+            st.rerun()
             
-    if data_arg:
-        df_arg = pd.DataFrame(data_arg)
-        st.dataframe(
-            df_arg.style.format({"Precio": "$ {:,.2f}", "Variación (%)": "{:,.2f}%"})
-            .map(lambda x: formatear_variacion(x), subset=['Variación (%)']),
-            use_container_width=True, hide_index=True
-        )
-                
-    st.divider()
-    st.subheader("🔎 Análisis Detallado por Empresa")
-    activo_seleccionado = st.selectbox("Selecciona una empresa argentina para ver su información financiera contable y noticias:", arg_keys)
-    
-    if activo_seleccionado and globales.get(activo_seleccionado):
-        ticker_str = globales[activo_seleccionado]['ticker']
-        with st.spinner(f"Descargando datos de {activo_seleccionado}..."):
-            try:
-                tk = yf.Ticker(ticker_str)
-                info = tk.info
-                
-                tab_info, tab_fin, tab_news = st.tabs(["📊 Perfil y Ratios", "📉 Información Contable", "📰 Noticias"])
-                
-                with tab_info:
-                    st.write(f"**Sector:** {info.get('sector', '-')} | **Industria:** {info.get('industry', '-')}")
-                    st.write(info.get('longBusinessSummary', 'Sin descripción disponible.'))
+        st.title(f"📊 Análisis Detallado Local: {emp}")
+        datos_globales = obtener_datos_globales()
+        ticker_info = datos_globales.get(emp)
+        
+        if ticker_info:
+            ticker_str = ticker_info["ticker"]
+            with st.spinner(f"Descargando balances de {ticker_str}..."):
+                try:
+                    tk = yf.Ticker(ticker_str)
+                    info = tk.info
                     
-                    st.markdown("<br>#### Ratios y Métricas Clave", unsafe_allow_html=True)
-                    c1, c2, c3, c4 = st.columns(4)
+                    tab_info, tab_fin, tab_news = st.tabs(["📋 Ratios y Métricas", "📊 Información Contable", "📰 Noticias Locales"])
                     
-                    mcap = info.get('marketCap')
-                    c1.metric("Market Cap", f"$ {mcap:,}" if mcap else "-")
-                    
-                    pe = info.get('trailingPE')
-                    c2.metric("P/E (Price to Earnings)", round(pe, 2) if pe else "-")
-                    
-                    pb = info.get('priceToBook')
-                    c3.metric("P/B (Price to Book)", round(pb, 2) if pb else "-")
-                    
-                    eps = info.get('trailingEps')
-                    c4.metric("BPA / EPS", f"$ {eps:.2f}" if eps else "-")
-                    
-                with tab_fin:
-                    st.markdown("*(Estado de Resultados. Valores en ARS, ajustados por inflación corporativa)*")
-                    df_fin = tk.financials
-                    if df_fin is not None and not df_fin.empty:
-                        # Formato limpio con comas
-                        st.dataframe(df_fin.style.format("{:,.0f}", na_rep="-"), use_container_width=True)
-                    else:
-                        st.info("Estados contables no disponibles temporalmente.")
-                    
-                with tab_news:
-                    noticias = tk.news
-                    if noticias:
-                        for n in noticias[:5]:
-                            st.markdown(f"**[{n['title']}]({n['link']})**")
-                    else:
-                        st.info("No hay noticias recientes para mostrar.")
-            except Exception:
-                st.info("No se pudieron obtener todos los detalles de este activo en este momento.")
+                    with tab_info:
+                        st.subheader("🔍 Ratios Clave de Rentabilidad y Valoración")
+                        c1, c2, c3, c4 = st.columns(4)
+                        c1.metric("P/E (Price to Earnings)", format_metric(info.get('trailingPE')))
+                        c2.metric("P/B (Price to Book)", format_metric(info.get('priceToBook')))
+                        c3.metric("BPA / EPS", format_metric(info.get('trailingEps')))
+                        c4.metric("Capitalización (Mcap)", format_metric(info.get('marketCap')))
+                        
+                        c5, c6, c7, c8 = st.columns(4)
+                        c5.metric("ROE (Rent. Capital)", format_metric(info.get('returnOnEquity'), True))
+                        c6.metric("ROA (Rent. Activos)", format_metric(info.get('returnOnAssets'), True))
+                        c7.metric("Margen Neto", format_metric(info.get('profitMargins'), True))
+                        c8.metric("ROIC (Est.)", format_metric(info.get('operatingMargins'), True))
 
+                    with tab_fin:
+                        st.subheader("📋 Estado de Resultados")
+                        df_fin = tk.financials
+                        if df_fin is not None and not df_fin.empty:
+                            st.dataframe(df_fin.style.format("{:,.0f}", na_rep="-"), use_container_width=True)
+                        else:
+                            st.info("Balances oficiales no cargados en formato internacional.")
 
-# ----------------- NUEVA SECCIÓN: OBLIGACIONES NEGOCIABLES -----------------
+                    with tab_news:
+                        st.subheader("📰 Últimas Noticias")
+                        try:
+                            noticias = tk.news
+                            if noticias:
+                                for n in noticias[:6]:
+                                    titulo_nota = n.get('title') or "Ver noticia"
+                                    link_nota = n.get('link') or "#"
+                                    editor = n.get('publisher') or "Yahoo Finance"
+                                    img_url = None
+                                    try:
+                                        img_url = n['thumbnail']['resolutions'][0]['url']
+                                    except:
+                                        pass
+                                    col_img, col_txt = st.columns([1, 4])
+                                    with col_img:
+                                        if img_url:
+                                            st.image(img_url, use_container_width=True)
+                                        else:
+                                            st.markdown("📰")
+                                    with col_txt:
+                                        st.markdown(f"**[{titulo_nota}]({link_nota})**")
+                                        st.caption(f"Fuente: {editor}")
+                                    st.markdown("---")
+                            else:
+                                st.info("No hay noticias recientes disponibles.")
+                        except:
+                            st.info("Sección de noticias en mantenimiento.")
+                except:
+                    st.info("Datos resumidos temporalmente.")
+        else:
+            st.error("No se encontraron datos para este ticker local.")
+            
+    else:
+        st.title("📈 Acciones Locales (Merval)")
+        filtro = st.text_input("🔍 Buscar Acción Argentina por Nombre o Ticker:", "").strip().lower()
+        
+        datos_globales = obtener_datos_globales()
+        empresas_argentinas = [
+            "YPF", "Galicia", "Pampa Energía", "Banco Macro", "Central Puerto", 
+            "Aluar", "Ternium", "Loma Negra", "Trans. Gas del Norte", "Trans. Gas del Sur", 
+            "Edenor", "Transener", "BYMA", "Valo", "Mirgor", "Supervielle", 
+            "BBVA AR", "Cablevisión", "Richmond", "Agrometal"
+        ]
+        
+        st.markdown("---")
+        for emp in empresas_argentinas:
+            ticker_info = datos_globales.get(emp)
+            if ticker_info:
+                ticker = ticker_info["ticker"]
+                precio = ticker_info["precio"]
+                var = ticker_info["var_pct"]
+                color = "#00e676" if var >= 0 else "#ff1744"
+                
+                if filtro in emp.lower() or filtro in ticker.lower():
+                    col_name, col_price, col_var, col_btn = st.columns(4)
+                    with col_name:
+                        st.markdown(f"**{emp}** `({ticker})`")
+                    with col_price:
+                        st.markdown(f"${precio:,.2f} ARS")
+                    with col_var:
+                        st.markdown(f"<span style='color:{color}; font-weight:bold;'>{var:+.2f}%</span>", unsafe_allow_html=True)
+                    with col_btn:
+                        if st.button("ℹ️ Más info", key=f"btn_{ticker}"):
+                            st.session_state.empresa_arg_seleccionada = emp
+                            st.rerun()
+                    
+                    st.markdown("<hr style='margin: 8px 0; border: 0.5px solid #30363d;'>", unsafe_allow_html=True)
+
 elif nav == "arg_ons":
     st.title("📄 Obligaciones Negociables (ONs Corporativas)")
     st.markdown("Información de flujo de fondos y estructura de las principales ONs en el mercado.")
@@ -772,10 +1398,7 @@ elif nav == "arg_ons":
     df_ons.columns = ["Ticker Corporativo", "TIR Aprox.", "Tasa Cupón", "Pago", "Moneda de Emisión/Pago", "Estructura de Capital", "Riesgo Local"]
     
     st.dataframe(df_ons, use_container_width=True, hide_index=True)
-    
-    st.info("💡 **Nota Educativa:** Las Obligaciones Negociables (ONs) son deuda corporativa. La TIR (Tasa Interna de Retorno) es estimativa y depende del precio de compra en el mercado secundario. La información de flujo de fondos mostrada corresponde al prospecto original de emisión de cada compañía.")
 
-# ----------------- RESTO DE VISTAS (BONOS, ETFs, HERRAMIENTAS, LEGAL) -----------------
 elif nav == "int_bonos":
     st.title("📄 Bonos Internacionales (Rendimientos del Tesoro)")
     c1, c2, c3, c4 = st.columns(4)
@@ -964,9 +1587,8 @@ elif nav == "legal":
     """)
 
 # ============================================================
-# 7. RENDERIZAR PIE DE PÁGINA DINÁMICO
+# 5. RENDERIZAR PIE DE PÁGINA DINÁMICO
 # ============================================================
-
 tz_ar = pytz.timezone("America/Argentina/Buenos_Aires")
 hora_actual = datetime.now(tz_ar).strftime('%d/%m/%Y %H:%M:%S')
 
