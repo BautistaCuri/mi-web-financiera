@@ -986,15 +986,22 @@ elif nav == "finanzas":
             </div>""", unsafe_allow_html=True)
 
 
-        # ============================================================
-        # 📥 IMPORTAR RESUMEN DE COCOS
-        # ============================================================
-        with st.expander("📥 Importar / actualizar datos desde Cocos", expanded=bool(user_data.get("cocos_import"))):
-            st.caption("Subí el resumen de cuenta de Cocos. El PDF reemplazará la cartera y el efectivo importados anteriormente, sin tocar tus movimientos manuales.")
+        tab_caja, tab_inversiones = st.tabs(["📅 Flujo de Caja y Transferencias", "💼 Cartera Bursátil y Rendimiento"])
+
+        # ==========================================
+        # PESTAÑA 1: MOVIMIENTOS Y TRANSFERENCIAS
+        # ==========================================
+        with tab_caja:
+            # ========================================================
+            # 📥 IMPORTAR RESUMEN DE COCOS
+            # ========================================================
+            st.markdown("### 📥 Importar / actualizar datos desde Cocos")
+            st.caption("Subí el resumen de cuenta de Cocos en PDF para cargar automáticamente cartera, efectivo y operaciones.")
             archivo_cocos = st.file_uploader(
                 "Seleccioná el resumen de cuenta de Cocos (PDF)",
                 type=["pdf"],
-                key="cocos_pdf_uploader"
+                key="cocos_pdf_uploader",
+                help="Ejemplo: movimientos_cuenta.pdf"
             )
 
             if archivo_cocos is not None:
@@ -1003,7 +1010,7 @@ elif nav == "finanzas":
                     try:
                         datos_cocos = importar_pdf_cocos(archivo_cocos)
 
-                        # Eliminamos solamente la información que había sido importada de Cocos.
+                        # Reemplazar solamente datos importados anteriormente desde Cocos.
                         user_data["inversiones"] = [
                             inv for inv in user_data.get("inversiones", [])
                             if inv.get("origen") != "Cocos PDF"
@@ -1019,8 +1026,6 @@ elif nav == "finanzas":
                             es_cedear = pos["nombre"].upper().startswith("CEDEAR")
                             if ticker in {"AL29", "AL35", "BPOC7", "TGNO4", "GGAL", "BBAR", "YPFD", "EDN", "BMA"}:
                                 ticker_app = ticker + ".BA"
-                            elif ticker in {"SPY", "IWM", "XLRE", "DOW", "MCD", "F", "WMT", "KO", "CVX", "BRKB", "GOOGL", "AMZN", "NVDA", "MSFT", "UNH", "BAC"}:
-                                ticker_app = ticker
                             else:
                                 ticker_app = ticker
 
@@ -1048,7 +1053,7 @@ elif nav == "finanzas":
                         user_data["cocos_import"]["fecha_importacion"] = datetime.now().isoformat()
                         sincronizar_datos()
 
-                        st.success("✅ Cocos importado correctamente: cartera, efectivo y resumen actualizado.")
+                        st.success("✅ Cocos importado correctamente: cartera, efectivo y operaciones actualizadas.")
                         st.rerun()
                     except ImportError as e:
                         st.error(str(e))
@@ -1066,19 +1071,13 @@ elif nav == "finanzas":
                     st.metric("Efectivo USD", f"USD {(ci.get('saldo_mep', 0) + ci.get('saldo_cable', 0)):,.2f}")
                 with d:
                     st.metric("Total inversión", f"ARS {ci.get('total_inversion', 0):,.2f}")
-
                 st.caption(
                     f"Cierre: {ci.get('fecha_cierre', '-')} · "
                     f"Resultado: ARS {ci.get('resultado', 0):,.2f} · "
                     f"Dividendos/rentas: ARS {ci.get('dividendos', 0):,.2f}"
                 )
 
-        tab_caja, tab_inversiones = st.tabs(["📅 Flujo de Caja y Transferencias", "💼 Cartera Bursátil y Rendimiento"])
-
-        # ==========================================
-        # PESTAÑA 1: MOVIMIENTOS Y TRANSFERENCIAS
-        # ==========================================
-        with tab_caja:
+            st.markdown("---")
             if user_data.get("cocos_import", {}).get("movimientos"):
                 st.markdown("### 📑 Operaciones detectadas en Cocos")
                 ops = user_data["cocos_import"]["movimientos"]
