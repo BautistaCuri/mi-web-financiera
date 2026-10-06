@@ -71,6 +71,239 @@ def sincronizar_datos():
         db[st.session_state.user_email] = st.session_state.user_data
         guardar_db(db)
 
+
+def _cocos_numero(valor):
+    """Convierte números del PDF de Cocos (1.234,56) a float."""
+    if valor is None:
+        return 0.0
+    try:
+        v = str(valor).replace("***", "").replace("**", "").replace("*", "").strip()
+        v = v.replace(".", "").replace(",", ".")
+        return float(v)
+    except Exception:
+        return 0.0
+
+
+def _cocos_ticker(texto):
+    """Obtiene el ticker a partir del nombre de especie de Cocos."""
+    t = str(texto).upper().strip()
+    m = re.search(r"\(([A-Z][A-Z0-9.\-]{1,9})\)", t)
+    if m:
+        return m.group(1)
+
+    mapa = {
+        "BONO REP ARGENTINA USD 1% 2029": "AL29",
+        "BONO REP. ARGENTINA USD STEP UP 2035": "AL35",
+        "GRUPO FINANCIERO GALICIA": "GGAL",
+        "BANCO BBVA ARG": "BBAR",
+        "YPF S.A.": "YPFD",
+        "EDENOR S.A.": "EDN",
+        "BANCO MACRO": "BMA",
+        "CEDEAR DE CHEVRON": "CVX",
+        "CEDEAR BERKSHIRE": "BRKB",
+        "CEDEAR ALPHABET": "GOOGL",
+        "CEDEAR THE REAL ESTATE SELECT": "XLRE",
+        "CEDEAR DE WAL-MART": "WMT",
+        "CEDEAR FORD": "F",
+        "CEDEAR AMAZON": "AMZN",
+        "CEDEAR COCA-COLA": "KO",
+        "CEDEAR DOW": "DOW",
+        "CEDEAR DE MICROSOFT": "MSFT",
+        "CEDEAR ISHARES TRUST RUSSELL": "IWM",
+        "CEDEAR MCDONALDS": "MCD",
+        "CEDEAR NVIDIA": "NVDA",
+        "CEDEAR SPDR S&P 500": "SPY",
+        "BOPREAL": "BPOC7",
+        "TRANS. GAS DEL NORTE": "TGNO4",
+        "CEDEAR UNITEDHEALTH": "UNH",
+        "CEDEAR BANK OF AMERICA": "BAC",
+    }
+    for clave, ticker in mapa.items():
+        if clave in t:
+            return ticker
+    return ""
+
+
+def importar_pdf_cocos(archivo):
+    """Lee un resumen de cuenta Cocos y devuelve posiciones, efectivo, resumen y operaciones."""
+    try:
+        from pypdf import PdfReader
+    except ImportError:
+        raise ImportError("Falta la librería pypdf. Instalá con: pip install pypdf")
+
+    reader = PdfReader(archivo)
+    texto = "\n".join((pagina.extract_text() or "") for pagina in reader.pages)
+    if not texto.strip():
+        raise ValueError("El PDF no contiene texto extraíble.")
+
+    # Normalizamos espacios sin destruir saltos de línea, porque las tablas dependen de ellos.
+    texto = texto.replace("\r", "\n")
+
+    # ------------------------------------------------------------
+    # POSICIÓN FINAL
+    # ------------------------------------------------------------
+    marcas = list(re.finditer(r"POSICION AL CIERRE DEL (\d{2}-\d{2}-\d{4})", texto))
+    if not marcas:
+        raise ValueError("No encontré la sección 'POSICION AL CIERRE' en el PDF.")
+
+    # El PDF trae una posición inicial (31-12-2025) y otra final.
+    # Siempre tomamos la última, que es la cartera real al cierre del informe.
+    marca = marcas[-1]
+    fecha_cierre = marca.group(1)
+    seccion_final = texto[marca.end():]
+
+    posiciones = []
+    patron_pos = re.compile(
+        r"^\s*(.+?)\s+([\d.]+,\d+)\s+ARS\s+([\d.]+,\d+)\*{0,3}\s+([\d.]+,\d+)\s+([\d.]+,\d+)\s*$"
+    )
+    lineas_finales = seccion_final.splitlines()
+    patron_pos_num = re.compile(r"^\s*([\d.]+,\d+)\s+ARS\s+([\d.]+,\d+)\*{0,3}\s+([\d.]+,\d+)\s+([\d.]+,\d+)\s*$")
+    for idx_linea, linea in enumerate(lineas_finales):
+        m = patron_pos.match(linea)
+        if m:
+            nombre = re.sub(r"\s+", " ", m.group(1)).strip()
+            grupos = (m.group(2), m.group(3), m.group(4), m.group(5))
+        else:
+            # pypdf puede separar el instrumento en una o dos líneas y dejar
+            # la fila numérica sola (caso XLRE).
+            mn = patron_pos_num.match(linea)
+            if not mn:
+                continue
+            anteriores = []
+            j = idx_linea - 1
+            while j >= 0 and len(anteriores) < 2:
+                previo = lineas_finales[j].strip()
+                if previo:
+                    anteriores.insert(0, previo)
+                j -= 1
+            nombre = re.sub(r"\s+", " ", " ".join(anteriores)).strip()
+            grupos = (mn.group(1), mn.group(2), mn.group(3), mn.group(4))
+
+        ticker = _cocos_ticker(nombre)
+        if not ticker:
+            continue
+        cantidad = _cocos_numero(grupos[0])
+        precio = _cocos_numero(grupos[1])
+        total_ars = _cocos_numero(grupos[3])
+        posiciones.append({
+            "ticker": ticker,
+            "nombre": nombre,
+            "cantidad": cantidad,
+            "moneda": "ARS",
+            "precio_pdf": precio,
+            "valor_ars": total_ars,
+        })
+
+    # Caso especial: Cocos parte XLRE en dos líneas ("...SPDR" / "FUND (XLRE)").
+    if not any(x.get("ticker") == "XLRE" for x in posiciones):
+        m_xlre = re.search(
+            r"CEDEAR THE REAL ESTATE SELECT SECTOR SPDR\s+([\d.]+,\d+)\s+ARS\s+([\d.]+,\d+)\*{0,3}\s+([\d.]+,\d+)\s+([\d.]+,\d+)\s+FUND \(XLRE\)",
+            seccion_final,
+            re.S,
+        )
+        if m_xlre:
+            posiciones.insert(5, {
+                "ticker": "XLRE",
+                "nombre": "CEDEAR THE REAL ESTATE SELECT SECTOR SPDR FUND (XLRE)",
+                "cantidad": _cocos_numero(m_xlre.group(1)),
+                "moneda": "ARS",
+                "precio_pdf": _cocos_numero(m_xlre.group(2)),
+                "valor_ars": _cocos_numero(m_xlre.group(4)),
+            })
+
+    if not posiciones:
+        raise ValueError("No encontré posiciones de activos en la sección de cierre del PDF.")
+
+    # Saldos finales
+    def saldo_patron(pat):
+        m = re.search(pat, seccion_final, re.IGNORECASE)
+        return _cocos_numero(m.group(1)) if m else 0.0
+
+    saldo_ars = saldo_patron(r"Saldo ARS\s+([\d.]+,\d+)")
+    saldo_cable = saldo_patron(r"Saldo USD CABLE\s+([\d.]+,\d+)")
+    saldo_mep = saldo_patron(r"Saldo USD MEP\s+([\d.]+,\d+)")
+
+    resumen_norm = re.sub(r"\s+", " ", seccion_final)
+    total_posicion = 0.0
+    total_inversion = 0.0
+    dividendos = 0.0
+    resultado = 0.0
+
+    m = re.search(r"Total Posición al [0-9-]+\s+ARS\s+([\d.]+,\d+)", resumen_norm, re.I)
+    if m:
+        total_posicion = _cocos_numero(m.group(1))
+    m = re.search(r"TOTAL DE LA INVERSION\s+ARS\s+([\d.]+,\d+)", resumen_norm, re.I)
+    if m:
+        total_inversion = _cocos_numero(m.group(1))
+    m = re.search(r"RESULTADO POR DIVIDENDOS, RENTAS Y AMORTIZACIONES\s+ARS\s+([\d.]+,\d+)", resumen_norm, re.I)
+    if m:
+        dividendos = _cocos_numero(m.group(1))
+    m = re.search(r"RESULTADO\s+ARS\s+([\d.]+,\d+)", resumen_norm, re.I)
+    if m:
+        resultado = _cocos_numero(m.group(1))
+
+    # ------------------------------------------------------------
+    # MOVIMIENTOS DEL PERÍODO
+    # Solo usamos la tabla general MOVIMIENTOS, no las tablas
+    # repetidas de MOVIMIENTOS POR ESPECIE.
+    # ------------------------------------------------------------
+    movimientos = []
+    if "MOVIMIENTOS" in texto:
+        bloque = texto.split("MOVIMIENTOS", 1)[1]
+        bloque = bloque.split("MOVIMIENTOS POR ESPECIE", 1)[0]
+        lineas = bloque.splitlines()
+
+        fecha_re = re.compile(r"^\s*(\d{2}-\d{2}-\d{4})\s+(\d{2}-\d{2}-\d{4})\s+(.*)$")
+        for i, linea in enumerate(lineas):
+            m = fecha_re.match(linea)
+            if not m:
+                continue
+            fecha_liq, fecha_conc, resto = m.groups()
+            if not re.search(r"\b(Compra|Venta)\b", resto, re.I):
+                continue
+
+            contexto = " ".join(x.strip() for x in lineas[i:i+3] if x.strip())
+            numeros = re.findall(r"-?[\d.]+,\d+", contexto)
+            if len(numeros) < 3:
+                continue
+
+            # La última cifra es el impacto monetario de la operación.
+            cantidad = abs(_cocos_numero(numeros[-3]))
+            precio = abs(_cocos_numero(numeros[-2]))
+            importe = _cocos_numero(numeros[-1])
+
+            tipo = "venta" if re.search(r"\bVenta\b", resto, re.I) else "compra"
+            ticker = _cocos_ticker(contexto)
+            if not ticker:
+                # Mapeos de nombres sin ticker visible entre paréntesis.
+                ticker = _cocos_ticker(resto)
+            if not ticker:
+                continue
+
+            movimientos.append({
+                "fecha": fecha_liq,
+                "fecha_concertacion": fecha_conc,
+                "tipo": tipo,
+                "ticker": ticker,
+                "cantidad": cantidad,
+                "precio": precio,
+                "importe_ars": importe,
+                "origen": "Cocos PDF",
+            })
+
+    return {
+        "fecha_cierre": fecha_cierre,
+        "posiciones": posiciones,
+        "saldo_ars": saldo_ars,
+        "saldo_mep": saldo_mep,
+        "saldo_cable": saldo_cable,
+        "total_posicion": total_posicion,
+        "total_inversion": total_inversion,
+        "dividendos": dividendos,
+        "resultado": resultado,
+        "movimientos": movimientos,
+    }
+
 # Cargar la base de datos para verificar el token
 db_general = cargar_db()
 token_url = st.query_params.get("t", None)
@@ -682,6 +915,13 @@ elif nav == "finanzas":
                 if moneda == "ARS": apps_ars += monto
                 else: apps_usd += monto
 
+        # Si existe una importación de Cocos, el saldo del broker del PDF
+        # pasa a ser la fuente de verdad para el efectivo del broker.
+        cocos_import = user_data.get("cocos_import")
+        if cocos_import:
+            apps_ars = float(cocos_import.get("saldo_ars", 0.0))
+            apps_usd = float(cocos_import.get("saldo_mep", 0.0)) + float(cocos_import.get("saldo_cable", 0.0))
+
         # VALOR ACTUAL DE ACTIVOS EN BROKERS (SOLO ACTIVOS)
         valor_portafolio_usd = 0.0
         inversiones_activas = [i for i in user_data.get("inversiones", []) if i.get("estado", "activo") == "activo"]
@@ -745,12 +985,123 @@ elif nav == "finanzas":
                 <h4 style="color: #bc8cff; margin: 5px 0;">{sim_act} {val_act:,.2f}</h4>
             </div>""", unsafe_allow_html=True)
 
+
+        # ============================================================
+        # 📥 IMPORTAR RESUMEN DE COCOS
+        # ============================================================
+        with st.expander("📥 Importar / actualizar datos desde Cocos", expanded=bool(user_data.get("cocos_import"))):
+            st.caption("Subí el resumen de cuenta de Cocos. El PDF reemplazará la cartera y el efectivo importados anteriormente, sin tocar tus movimientos manuales.")
+            archivo_cocos = st.file_uploader(
+                "Seleccioná el resumen de cuenta de Cocos (PDF)",
+                type=["pdf"],
+                key="cocos_pdf_uploader"
+            )
+
+            if archivo_cocos is not None:
+                st.success(f"📄 Archivo seleccionado: {archivo_cocos.name}")
+                if st.button("🚀 IMPORTAR TODO DESDE COCOS", type="primary", use_container_width=True, key="btn_importar_cocos_completo"):
+                    try:
+                        datos_cocos = importar_pdf_cocos(archivo_cocos)
+
+                        # Eliminamos solamente la información que había sido importada de Cocos.
+                        user_data["inversiones"] = [
+                            inv for inv in user_data.get("inversiones", [])
+                            if inv.get("origen") != "Cocos PDF"
+                        ]
+                        user_data["movimientos"] = [
+                            mov for mov in user_data.get("movimientos", [])
+                            if mov.get("origen") != "Cocos PDF"
+                        ]
+
+                        # La posición final del PDF es la fuente de verdad de la cartera actual.
+                        for pos in datos_cocos["posiciones"]:
+                            ticker = pos["ticker"]
+                            es_cedear = pos["nombre"].upper().startswith("CEDEAR")
+                            if ticker in {"AL29", "AL35", "BPOC7", "TGNO4", "GGAL", "BBAR", "YPFD", "EDN", "BMA"}:
+                                ticker_app = ticker + ".BA"
+                            elif ticker in {"SPY", "IWM", "XLRE", "DOW", "MCD", "F", "WMT", "KO", "CVX", "BRKB", "GOOGL", "AMZN", "NVDA", "MSFT", "UNH", "BAC"}:
+                                ticker_app = ticker
+                            else:
+                                ticker_app = ticker
+
+                            user_data.setdefault("inversiones", []).append({
+                                "id": str(uuid.uuid4()),
+                                "ticker": ticker_app,
+                                "ticker_cocos": ticker,
+                                "cantidad": float(pos["cantidad"]),
+                                "cantidad_original": float(pos["cantidad"]),
+                                "precio_compra": float(pos["precio_pdf"]),
+                                "precio_pdf": float(pos["precio_pdf"]),
+                                "valor_pdf_ars": float(pos["valor_ars"]),
+                                "moneda": "ARS",
+                                "tipo_dolar": "CCL",
+                                "fecha": datos_cocos["fecha_cierre"],
+                                "es_cedear": es_cedear,
+                                "nota": "Posición importada automáticamente desde Cocos",
+                                "estado": "activo",
+                                "nombre_completo": pos["nombre"],
+                                "origen": "Cocos PDF"
+                            })
+
+                        user_data["cocos_import"] = datos_cocos
+                        user_data["cocos_import"]["archivo"] = archivo_cocos.name
+                        user_data["cocos_import"]["fecha_importacion"] = datetime.now().isoformat()
+                        sincronizar_datos()
+
+                        st.success("✅ Cocos importado correctamente: cartera, efectivo y resumen actualizado.")
+                        st.rerun()
+                    except ImportError as e:
+                        st.error(str(e))
+                    except Exception as e:
+                        st.error(f"❌ No se pudo importar el PDF: {e}")
+
+            if user_data.get("cocos_import"):
+                ci = user_data["cocos_import"]
+                a, b, c, d = st.columns(4)
+                with a:
+                    st.metric("Posiciones", len(ci.get("posiciones", [])))
+                with b:
+                    st.metric("Efectivo ARS", f"ARS {ci.get('saldo_ars', 0):,.2f}")
+                with c:
+                    st.metric("Efectivo USD", f"USD {(ci.get('saldo_mep', 0) + ci.get('saldo_cable', 0)):,.2f}")
+                with d:
+                    st.metric("Total inversión", f"ARS {ci.get('total_inversion', 0):,.2f}")
+
+                st.caption(
+                    f"Cierre: {ci.get('fecha_cierre', '-')} · "
+                    f"Resultado: ARS {ci.get('resultado', 0):,.2f} · "
+                    f"Dividendos/rentas: ARS {ci.get('dividendos', 0):,.2f}"
+                )
+
         tab_caja, tab_inversiones = st.tabs(["📅 Flujo de Caja y Transferencias", "💼 Cartera Bursátil y Rendimiento"])
 
         # ==========================================
         # PESTAÑA 1: MOVIMIENTOS Y TRANSFERENCIAS
         # ==========================================
         with tab_caja:
+            if user_data.get("cocos_import", {}).get("movimientos"):
+                st.markdown("### 📑 Operaciones detectadas en Cocos")
+                ops = user_data["cocos_import"]["movimientos"]
+                df_ops = pd.DataFrame(ops)
+                if not df_ops.empty:
+                    df_ops = df_ops.rename(columns={
+                        "fecha": "Fecha",
+                        "tipo": "Tipo",
+                        "ticker": "Ticker",
+                        "cantidad": "Cantidad",
+                        "precio": "Precio",
+                        "importe_ars": "Impacto ARS",
+                    })
+                    st.dataframe(df_ops, use_container_width=True, hide_index=True)
+                    st.download_button(
+                        "⬇️ Descargar operaciones Cocos (CSV)",
+                        df_ops.to_csv(index=False).encode("utf-8-sig"),
+                        file_name="operaciones_cocos.csv",
+                        mime="text/csv",
+                        key="download_operaciones_cocos"
+                    )
+                st.markdown("---")
+
             col_caja1, col_caja2 = st.columns([1, 2])
             
             with col_caja1:
